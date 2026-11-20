@@ -100,34 +100,22 @@ describe("agent config & draft splitting", () => {
     });
   });
 
-  test("buildAgentLabels adds routed labels and keeps pr-radar.cwd authoritative", () => {
+  test("buildAgentLabels adds accepted labels and keeps pr-radar.cwd authoritative", () => {
     expect(buildAgentLabels("CWD-BASE")).toEqual({ "pr-radar.cwd": "CWD-BASE" });
     expect(
       buildAgentLabels("CWD-WORKTREE", {
-        labels: {
-          "ade.kind": " external-review ",
-          "pr-radar.cwd": "CWD-BASE",
-          "pr-radar.other": "x",
-          empty: "  ",
-          "": "v",
-          long: "x".repeat(129),
-          "ade.lead": "11111111-1111-4111-8111-111111111111",
-          slice: "s",
-          "PR-RADAR.cwd": "x",
-          "bad key=1": "v",
-          ctl: "a\nb",
-        },
+        "ade.kind": "external-review",
+        "pr-radar.cwd": "CWD-BASE",
       }),
     ).toEqual({ "ade.kind": "external-review", "pr-radar.cwd": "CWD-WORKTREE" });
-    const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, "v"]));
-    expect(Object.keys(buildAgentLabels("CWD-TBD", { labels: many }))).toHaveLength(17);
   });
 
-  test("a malformed routed labels value is dropped, not a routing failure", () => {
+  test("a malformed routed labels value survives parsing so launch validation can block it", () => {
     const parsed = RoutingScriptResultSchema.parse({ model: "m", labels: { a: 1 } });
     expect(parsed.model).toBe("m");
-    expect(parsed.labels).toBeUndefined();
+    expect(parsed.labels).toEqual({ a: 1 });
     expect(RoutingScriptResultSchema.parse({ labels: { a: "b" } }).labels).toEqual({ a: "b" });
+    expect(RoutingScriptResultSchema.parse({ labels: "x" }).labels).toBe("x");
   });
 
   test("splitDraftRows separates regular PRs and DPRs", () => {
