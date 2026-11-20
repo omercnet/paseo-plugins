@@ -14,6 +14,8 @@ const recorded = vi.hoisted(() => ({
   status: "idle" as string,
   // The agent's live record when it differs from the rendered one (a turn started since render).
   liveStatus: null as string | null,
+  // When set, `send` rejects with it, as a daemon that refuses the message would.
+  sendError: null as Error | null,
 }));
 
 vi.mock("@getpaseo/plugin/client", () => ({
@@ -24,6 +26,7 @@ vi.mock("@getpaseo/plugin/client", () => ({
       ref: (agentId: string) => ({
         current: () => ({ status: recorded.liveStatus ?? recorded.status }),
         send: async (...args: unknown[]) => {
+          if (recorded.sendError) throw recorded.sendError;
           recorded.sendArgs.push(args);
           recorded.sent.push({ agentId, text: String(args[0]) });
         },
@@ -57,7 +60,9 @@ vi.mock("react-native", () => ({
       {props.children}
     </div>
   ),
-  Text: (props: { children?: ReactNode }) => <span>{props.children}</span>,
+  Text: (props: { children?: ReactNode; accessibilityRole?: string }) => (
+    <span role={props.accessibilityRole === "alert" ? "alert" : undefined}>{props.children}</span>
+  ),
   Pressable: (props: {
     children?: ReactNode;
     accessibilityLabel?: string;
@@ -130,6 +135,7 @@ beforeEach(() => {
   recorded.status = "idle";
   recorded.liveStatus = null;
   recorded.sendArgs = [];
+  recorded.sendError = null;
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -250,6 +256,37 @@ describe("quota popover reconciliation", () => {
     expect(recorded.sent).toEqual([
       { agentId: "synthetic-agent", text: "/session pin OAuth credential #3" },
     ]);
+  });
+
+  test("announces a failed switch to screen readers", async () => {
+    recorded.logins = [
+      {
+        credentialId: 3,
+        label: "a@x.invalid",
+        active: false,
+        onlyLogin: false,
+        quotaAccountKeys: ["a"],
+      },
+      {
+        credentialId: 5,
+        label: "b@x.invalid",
+        active: true,
+        onlyLogin: false,
+        quotaAccountKeys: ["b"],
+      },
+    ];
+    recorded.sendError = new Error("The agent is not running.");
+    await render([
+      { ...quota("a", "weekly", 0.9), email: "a@x.invalid" },
+      { ...quota("b", "weekly", 0.2), email: "b@x.invalid" },
+    ]);
+    const button = container.querySelector(
+      '[aria-label="Use a@x.invalid for this session"]',
+    ) as HTMLButtonElement;
+    await act(async () => button.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+      "The agent is not running.",
+    );
   });
 
   test("disables Switch while the agent runs a turn, so it cannot interrupt it", async () => {

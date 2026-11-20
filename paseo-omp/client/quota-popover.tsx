@@ -28,6 +28,8 @@ import {
 } from "./quota-state";
 
 const QUOTA_POLL_MS = 30_000;
+// As in the pill: a session with no answer yet (its runtime down or recovering) is asked again.
+const SESSION_PROVIDER_RETRY_MS = 60_000;
 
 export function QuotaPopover(props: PluginButtonContentProps) {
   const { theme, layout, close } = props;
@@ -57,6 +59,8 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         needsSessionModelProvider(session.provider, session.model),
     ),
     retry: false,
+    // A known provider is fixed by the opaque model id; only a missing one is worth asking again.
+    refetchInterval: (query) => (query.state.data?.provider ? false : SESSION_PROVIDER_RETRY_MS),
   });
   const currentProvider =
     quotaProviderFromSession(session?.provider ?? "", session?.model ?? null) ??
@@ -242,7 +246,13 @@ export function QuotaPopover(props: PluginButtonContentProps) {
   );
 
   if (!session || quotas.isLoading) return <Text style={styles.muted}>Loading omp quotas…</Text>;
-  if (quotas.error) return <Text style={styles.error}>Could not read omp quota state.</Text>;
+  if (quotas.error) {
+    return (
+      <Text accessibilityRole="alert" style={styles.error}>
+        Could not read omp quota state.
+      </Text>
+    );
+  }
 
   const groups = quotaProviderGroups(quotas.data?.quotas ?? [], currentProvider);
   const hasCurrent = groups.some((group) => group.provider === currentProvider);
@@ -404,7 +414,11 @@ export function QuotaPopover(props: PluginButtonContentProps) {
         // The host wraps handler errors in transport details; only a short notice belongs here.
         <Text style={styles.muted}>Could not read which account this session uses.</Text>
       ) : null}
-      {switchError ? <Text style={styles.error}>{switchError}</Text> : null}
+      {switchError ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {switchError}
+        </Text>
+      ) : null}
       {/* The default store needs no label; a named profile's usage is worth telling apart. */}
       {store ? <Text style={styles.muted}>{storeLabel(store)}</Text> : null}
       {currentProvider && !hasActive ? (

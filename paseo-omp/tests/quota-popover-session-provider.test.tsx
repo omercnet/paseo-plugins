@@ -158,6 +158,37 @@ test("asks the live session for its provider when it starts or resumes while the
   expect(agent.asked).toBe(1);
 });
 
+test("names the provider once a recovering session answers, while the popover stays open", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "clearTimeout", "clearInterval"] });
+  try {
+    // The session's runtime is down: it answers null, and the popover shows every provider.
+    const before = agent.asked;
+    await show("idle", null);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(agent.asked).toBe(before + 1);
+    expect(currentProvider()).toBe(false);
+
+    // The runtime recovers with no status or model change; the open popover asks again.
+    agent.sessionProvider = "anthropic";
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    // With fake timers, waitFor advances them, so React Query's result reaches the screen.
+    await vi.waitFor(() => expect(currentProvider()).toBe(true));
+    expect(agent.asked).toBe(before + 2);
+
+    // A known provider is kept: nothing more is asked.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3 * 60_000);
+    });
+    expect(agent.asked).toBe(before + 2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("does not show the previous session's login in use once the agent's status changes", async () => {
   // A bundled omp agent names its provider in the model string; its logins come from OMP's pin.
   agent.provider = "omp";

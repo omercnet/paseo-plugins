@@ -85,7 +85,7 @@ describe("session-specific quota selection", () => {
       label: "25%",
       title: "Anthropic · all accounts · 25% (last recorded usage, not live)",
     });
-    expect(quotaSummaryForProvider(quotas, "azure")).toMatchObject({ visible: true, label: "—" });
+    expect(quotaSummaryForProvider(quotas, "azure")).toMatchObject({ visible: true, label: "n/a" });
   });
 
   test("summarizes the account in use, not the provider's busiest account", () => {
@@ -1384,7 +1384,7 @@ describe("profile alias and opaque-model quotas", () => {
     expect(quotaSeverityForProvider(quotas, null, true)).toBe("danger");
     expect(quotaSummaryForProvider([], null, true)).toMatchObject({
       visible: true,
-      label: "Quotas · —",
+      label: "Quotas · n/a",
     });
     expect(quotaSummaryForProvider(quotas, null).visible).toBe(false);
   });

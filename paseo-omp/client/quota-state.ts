@@ -112,9 +112,9 @@ export function quotaSummaryForProvider(
     : "All providers";
   const title = `${scope} · ${peak ?? "no recorded usage"} (last recorded usage, not live)`;
   if (!provider) {
-    return { visible: includeAll, label: `Quotas · ${peak ?? "—"}`, title };
+    return { visible: includeAll, label: `Quotas · ${peak ?? "n/a"}`, title };
   }
-  return { visible: true, label: peak ?? "—", title };
+  return { visible: true, label: peak ?? "n/a", title };
 }
 
 export function quotaSeverityForProvider(
