@@ -657,8 +657,28 @@ describe("directory invalidation observations", () => {
       ["attention", { requiresAttention: true, attentionReason: "permission" }],
       ["permissions", { pendingPermissions: [{ id: "permission-1" }] }],
       ["workspace", { workspaceId: "workspace-2" }],
+      ["archive state", { archivedAt: "2026-11-14T10:05:00.000Z" }],
     ])("invalidates when the %s changes", async (_name, fields) => {
       expect(await invalidationsAfter([upsert(), upsert(fields)])).toBe(2);
+    });
+
+    // The filter keeps nothing of an archived agent's row: the same archive upsert, repeated, is
+    // not recognised as already seen.
+    test("frees an archived agent's row fields instead of keeping them until removal", async () => {
+      const archivedAt = "2026-11-14T10:05:00.000Z";
+      expect(
+        await invalidationsAfter([upsert(), upsert({ archivedAt }), upsert({ archivedAt })]),
+      ).toBe(3);
+    });
+
+    test("invalidates when an archived agent is restored", async () => {
+      expect(
+        await invalidationsAfter([
+          upsert(),
+          upsert({ archivedAt: "2026-11-14T10:05:00.000Z" }),
+          upsert(),
+        ]),
+      ).toBe(3);
     });
 
     test("invalidates again for an agent that was removed and came back", async () => {

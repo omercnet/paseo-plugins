@@ -68,7 +68,7 @@ function makeRoot(): string {
   return root;
 }
 
-function gitIn(dir: string, args: string[]): string {
+function gitIn(dir: string, args: string[], input?: Buffer): string {
   const env = { ...process.env };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
@@ -76,9 +76,23 @@ function gitIn(dir: string, args: string[]): string {
   delete env.GIT_INDEX_FILE;
   delete env.GIT_OBJECT_DIRECTORY;
   delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
-  return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe", env })
+  return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe", env, input })
     .toString()
     .trim();
+}
+
+/**
+ * Stages an entry whose path is raw bytes (a non-UTF-8 name the filesystem may not even allow) and
+ * marks it skip-worktree, so `git status` does not report the file that was never written as deleted.
+ */
+function trackRawName(dir: string, mode: string, sha: string, rawName: Buffer): void {
+  const record = Buffer.concat([Buffer.from(`${mode} ${sha}\t`), rawName]);
+  gitIn(dir, ["update-index", "--add", "--index-info"], Buffer.concat([record, Buffer.from("\n")]));
+  gitIn(
+    dir,
+    ["update-index", "--skip-worktree", "-z", "--stdin"],
+    Buffer.concat([rawName, Buffer.from([0])]),
+  );
 }
 
 function initRepo(dir: string, remoteUrl: string | null): void {
@@ -101,6 +115,19 @@ function commitFile(dir: string, name: string): string {
   gitIn(dir, ["add", name]);
   gitIn(dir, ["commit", "-m", `add ${name}`]);
   return gitIn(dir, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * Puts a `git` first on PATH that runs `intercept` (shell; the call's arguments are in "$*") and
+ * then hands over to the real git, so a test can make one command fail or answer differently.
+ */
+function stubGit(root: string, intercept: string): void {
+  const realGit = execFileSync("which", ["git"]).toString().trim();
+  const binDir = mkdtempSync(join(root, "git-stub-"));
+  const wrapper = join(binDir, "git");
+  writeFileSync(wrapper, ["#!/bin/sh", intercept, `exec '${realGit}' "$@"`, ""].join("\n"));
+  chmodSync(wrapper, 0o755);
+  vi.stubEnv("PATH", `${binDir}:${process.env.PATH ?? ""}`);
 }
 
 /**
@@ -446,6 +473,45 @@ describe("ignored local files", () => {
     ).rejects.toThrow(/would overwrite an ignored local file/);
     expect(readFileSync(join(repoDir, ".env"), "utf8")).toBe("mine\n");
     expect(readFileSync(join(repoDir, "private/secret.txt"), "utf8")).toBe("mine\n");
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("the checkout flag still refuses when the guard misses an ignored file", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root, { ".env": { content: "from-pr\n" } });
+    appendFileSync(join(repoDir, ".git/info/exclude"), ".env\n");
+    writeFileSync(join(repoDir, ".env"), "mine\n");
+    // Blind the guard, which finds ignored files with `ls-files --others --ignored`.
+    stubGit(root, `case "$*" in *"--others --ignored"*) exit 0;; esac`);
+    const error = await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" })).catch(
+      (err: Error) => err,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toMatch(/would overwrite an ignored local file/);
+    expect((error as Error).message).toMatch(/would be overwritten by checkout/);
+    expect(readFileSync(join(repoDir, ".env"), "utf8")).toBe("mine\n");
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("the checkout flag still refuses an issue branch when the guard misses an ignored file", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "pr-radar/issue-12"]);
+    writeFileSync(join(repoDir, ".env"), "from-issue\n");
+    gitIn(repoDir, ["add", ".env"]);
+    gitIn(repoDir, ["commit", "-m", "issue adds env"]);
+    gitIn(repoDir, ["checkout", "main"]);
+    appendFileSync(join(repoDir, ".git/info/exclude"), ".env\n");
+    writeFileSync(join(repoDir, ".env"), "mine\n");
+    stubGit(root, `case "$*" in *"--others --ignored"*) exit 0;; esac`);
+    const error = await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+    ).catch((err: Error) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toMatch(/would overwrite an ignored local file/);
+    expect((error as Error).message).toMatch(/would be overwritten by checkout/);
+    expect(readFileSync(join(repoDir, ".env"), "utf8")).toBe("mine\n");
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
@@ -825,6 +891,43 @@ describe("git hardening", () => {
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
 
+  test("checks out a PR in a repository that tracks a non-UTF-8 name", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const blob = gitIn(repoDir, ["hash-object", "-w", "--stdin"], Buffer.from("data\n"));
+    trackRawName(repoDir, "100644", blob, Buffer.from([0x64, 0x69, 0x72, 0x2f, 0xff, 0x2e, 0x74]));
+    gitIn(repoDir, ["commit", "-m", "track a non-UTF-8 name"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+  });
+
+  test("checks out a PR that keeps a submodule next to a non-UTF-8 name", async () => {
+    const root = makeRoot();
+    const { repoDir, bareDir } = makePullableRepo(root);
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},submod`]);
+    gitIn(repoDir, ["commit", "-m", "add gitlink"]);
+    const prHead = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["push", bareDir, `+${prHead}:refs/pull/7/head`]);
+    const blob = gitIn(repoDir, ["hash-object", "-w", "--stdin"], Buffer.from("data\n"));
+    trackRawName(repoDir, "100644", blob, Buffer.from([0xff, 0x2e, 0x74]));
+    gitIn(repoDir, ["commit", "-m", "track a non-UTF-8 name"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+  });
+
+  test("fails closed when a submodule path is not valid UTF-8", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    trackRawName(repoDir, "160000", gitlinkSha, Buffer.from([0x73, 0x75, 0x62, 0xff]));
+    gitIn(repoDir, ["commit", "-m", "add a submodule with a raw name"]);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /submodule path .* is not valid UTF-8/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
   test("refuses an issue checkout that replaces a submodule with a file", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
@@ -844,6 +947,50 @@ describe("git hardening", () => {
       ),
     ).rejects.toThrow(/replaces the submodule under submod/);
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("refuses a new issue branch whose start point replaces a submodule with a file", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    writeFileSync(join(repoDir, "submod"), "a file on the default branch\n");
+    gitIn(repoDir, ["add", "submod"]);
+    gitIn(repoDir, ["commit", "-m", "submod is a file"]);
+    gitIn(repoDir, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    gitIn(repoDir, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["checkout", "-b", "work"]);
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["rm", "-q", "submod"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},submod`]);
+    gitIn(repoDir, ["commit", "-m", "submod becomes a submodule"]);
+    await expect(
+      prepare(
+        request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+      ),
+    ).rejects.toThrow(/replaces the submodule under submod/);
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("work");
+    expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
+  });
+
+  test("starts a new issue branch when the start point keeps the same submodule", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const firstSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${firstSha},submod`]);
+    gitIn(repoDir, ["commit", "-m", "add submodule"]);
+    const defaultTip = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-ref", "refs/remotes/origin/main", defaultTip]);
+    gitIn(repoDir, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["checkout", "-b", "work"]);
+    gitIn(repoDir, ["update-index", "--cacheinfo", `160000,${defaultTip},submod`]);
+    gitIn(repoDir, ["commit", "-m", "bump the submodule"]);
+    const result = await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+    );
+    expect(result.cwd).toBe(repoDir);
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/issue-12");
+    expect(gitIn(repoDir, ["rev-parse", "HEAD"])).toBe(defaultTip);
   });
 
   test("re-materializes a partially checked out issue worktree", async () => {
@@ -1233,7 +1380,61 @@ describe("issue start point without a remote default", () => {
     commitFile(repoDir, "unmerged-pr.txt");
     await expect(
       prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
-    ).rejects.toThrow(/HEAD is not on any origin branch/);
+    ).rejects.toThrow(/HEAD is not on origin\/main or origin\/master/);
+  });
+
+  test("refuses a HEAD that only a pushed non-default remote branch contains", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "fix-the-thing"]);
+    commitFile(repoDir, "pushed-pr.txt");
+    gitIn(repoDir, ["update-ref", "refs/remotes/origin/fix-the-thing", "HEAD"]);
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/HEAD is not on origin\/main or origin\/master/);
+    expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
+  });
+
+  test("does not count a remote branch named under main or master as the default", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "fix-the-thing"]);
+    commitFile(repoDir, "pushed-pr.txt");
+    // Default is `trunk`: there is no origin/master, so a pushed origin/master/feature is only
+    // a branch whose name starts with it.
+    gitIn(repoDir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["update-ref", "refs/remotes/origin/master/feature", "HEAD"]);
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/HEAD is not on origin\/main or origin\/master/);
+    expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
+  });
+
+  test("does not take a tag named like the remote default branch for it", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "fix-the-thing"]);
+    commitFile(repoDir, "pushed-pr.txt");
+    gitIn(repoDir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["tag", "refs/remotes/origin/main", "HEAD"]);
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/HEAD is not on origin\/main or origin\/master/);
+    expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
+  });
+
+  test("accepts a HEAD that the remote master branch contains", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    const published = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["update-ref", "refs/remotes/origin/master", published]);
+    const result = await prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }));
+    expect(gitIn(result.cwd, ["rev-parse", "HEAD"])).toBe(published);
   });
 
   test("accepts a detached HEAD that a remote branch contains when creating a worktree", async () => {
@@ -1244,6 +1445,160 @@ describe("issue start point without a remote default", () => {
     gitIn(repoDir, ["checkout", "--detach"]);
     const result = await prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }));
     expect(gitIn(result.cwd, ["rev-parse", "HEAD"])).toBe(published);
+  });
+});
+
+describe("worktree creation failures", () => {
+  const checkoutFails = `case "$*" in *"checkout --force"*) echo "stub: checkout refused" >&2; exit 1;; esac`;
+  const checkoutAndRemovalFail = `case "$*" in *"checkout --force"*) echo "stub: checkout refused" >&2; exit 1;; *"worktree remove"*) echo "stub: removal refused" >&2; exit 1;; esac`;
+
+  function worktreeCount(repoDir: string): number {
+    return gitIn(repoDir, ["worktree", "list", "--porcelain"])
+      .split("\n")
+      .filter((line) => line.startsWith("worktree ")).length;
+  }
+
+  test("removes the half-created issue worktree when its checkout fails", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const originalPath = process.env.PATH ?? "";
+    stubGit(root, checkoutFails);
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/stub: checkout refused/);
+    expect(worktreeCount(repoDir)).toBe(1);
+
+    // The next request starts clean instead of finding an unpopulated worktree by its branch.
+    vi.stubEnv("PATH", originalPath);
+    const result = await prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }));
+    expect(result.worktreeCreated).toBe(true);
+    expect(existsSync(join(result.cwd, "README.md"))).toBe(true);
+  });
+
+  test("removes the half-created PR worktree when its checkout fails", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    stubGit(root, checkoutFails);
+    await expect(prepare(request({ targetDir: repoDir }))).rejects.toThrow(
+      /stub: checkout refused/,
+    );
+    expect(worktreeCount(repoDir)).toBe(1);
+  });
+
+  test("reports both errors when the failed checkout's cleanup fails too", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    stubGit(root, checkoutAndRemovalFail);
+    const error = await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }),
+    ).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(AggregateError);
+    const failure = error as AggregateError;
+    expect(failure.errors).toHaveLength(2);
+    expect(failure.message).toMatch(/stub: checkout refused/);
+    expect(failure.message).toMatch(/stub: removal refused/);
+    expect(failure.message).toMatch(/git worktree remove --force/);
+    // The worktree that could not be removed is still registered; the message names it.
+    expect(worktreeCount(repoDir)).toBe(2);
+  });
+
+  test("reports a failing branch lookup instead of calling the checkout detached", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    stubGit(
+      root,
+      `case "$*" in *"branch --show-current"*) echo "stub: branch lookup failed" >&2; exit 1;; esac`,
+    );
+    const error = await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir, cwdMode: "CWD-BASE" }),
+    ).catch((err: Error) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/stub: branch lookup failed/);
+    expect((error as Error).message).not.toMatch(/detached HEAD/);
+    expect(gitIn(repoDir, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+  });
+});
+
+describe("a branch held by the base checkout", () => {
+  test("refuses a worktree for an issue that an earlier CWD-BASE launch checked out", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const issue = request({ itemKind: "issue", prNumber: 12, targetDir: repoDir });
+    await prepare({ ...issue, cwdMode: "CWD-BASE" });
+    await expect(prepare(issue)).rejects.toThrow(
+      /pr-radar\/issue-12 is checked out in the base checkout .*repo/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/issue-12");
+    expect(gitIn(repoDir, ["worktree", "list", "--porcelain"]).match(/^worktree /gm)).toHaveLength(
+      1,
+    );
+  });
+
+  test("refuses a worktree for a PR that an earlier CWD-BASE launch checked out", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    await expect(prepare(request({ targetDir: repoDir }))).rejects.toThrow(
+      /pr-radar\/pr-7 is checked out in the base checkout/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+  });
+});
+
+describe("concurrent launches", () => {
+  test("refuses a second launch of the same issue while the first prepares its workspace", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const issue = request({ itemKind: "issue", prNumber: 12, targetDir: repoDir });
+    const first = prepare(issue);
+    const second = prepare(issue);
+    await expect(second).rejects.toThrow(/already preparing its workspace/);
+    const result = await first;
+    expect(result.worktreeCreated).toBe(true);
+
+    // The lock is released, so a later launch reuses the finished worktree.
+    const later = await prepare(issue);
+    expect(later.worktreeCreated).toBe(false);
+    expect(later.cwd).toBe(result.cwd);
+  });
+
+  test("prepares the same issue number of two repositories at once", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    const otherDir = join(root, "other");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    initRepo(otherDir, "git@github.com:owner/other.git");
+    const [first, second] = await Promise.all([
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+      prepare(
+        request({
+          itemKind: "issue",
+          repository: "owner/other",
+          prNumber: 12,
+          targetDir: otherDir,
+        }),
+      ),
+    ]);
+    expect(first.worktreeCreated).toBe(true);
+    expect(second.worktreeCreated).toBe(true);
+    expect(first.cwd).not.toBe(second.cwd);
+  });
+
+  test("releases the lock when a launch fails", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const issue = request({ itemKind: "issue", prNumber: 12, targetDir: repoDir });
+    await expect(prepare({ ...issue, worktreeName: "../escape" })).rejects.toThrow(
+      /Invalid worktree folder name/,
+    );
+    const result = await prepare(issue);
+    expect(result.worktreeCreated).toBe(true);
   });
 });
 

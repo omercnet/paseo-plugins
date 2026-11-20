@@ -8,11 +8,13 @@ interface AgentUpdate {
   requiresAttention?: unknown;
   attentionReason?: unknown;
   pendingPermissions?: unknown;
+  archivedAt?: unknown;
 }
 
 // The agent fields buildRadarSnapshot and toRadarAgent read, minus `updatedAt`. The daemon touches
 // `updatedAt` and re-publishes a running agent on every usage report, so refetching on it rescanned
 // the directory every second or two. `updatedAt` only orders agents inside a row; the poll keeps it.
+// `archivedAt` is in, so archiving or restoring an agent that nothing else changed still refreshes.
 function rowFields(agent: AgentUpdate): string {
   return JSON.stringify([
     agent.workspaceId,
@@ -21,7 +23,12 @@ function rowFields(agent: AgentUpdate): string {
     agent.requiresAttention,
     agent.attentionReason,
     agent.pendingPermissions,
+    agent.archivedAt,
   ]);
+}
+
+function isArchived(agent: AgentUpdate): boolean {
+  return typeof agent.archivedAt === "string";
 }
 
 /**
@@ -49,9 +56,15 @@ function quietUpdateFilter() {
         return true;
       }
       const fields = rowFields(payload.agent);
-      if (shownFields.get(payload.agent.id) === fields) return true;
-      shownFields.set(payload.agent.id, fields);
-      return false;
+      const unchanged = shownFields.get(payload.agent.id) === fields;
+      // An archived agent has no row to keep current, so its snapshot (title, permissions, ...) is
+      // freed now instead of at removal. A repeat archive upsert then invalidates once more.
+      if (isArchived(payload.agent)) {
+        shownFields.delete(payload.agent.id);
+      } else {
+        shownFields.set(payload.agent.id, fields);
+      }
+      return unchanged;
     }
     if (payload.kind === "remove" && typeof payload.agentId === "string") {
       shownFields.delete(payload.agentId);

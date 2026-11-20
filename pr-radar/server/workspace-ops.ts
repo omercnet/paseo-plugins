@@ -241,9 +241,7 @@ async function configuredFilterSafetyArgs(cwd: string): Promise<FilterOverride[]
         : undefined;
     if (code !== 1) {
       throw new Error(
-        `Could not enumerate repository filter configuration in ${cwd}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `Could not enumerate repository filter configuration in ${cwd}: ${errorMessage(err)}`,
       );
     }
     raw = Buffer.alloc(0);
@@ -706,27 +704,67 @@ async function assertNoIgnoredFileOverwrite(
   }
 }
 
-/**
- * Runs git and returns its stdout as UTF-8, failing closed when the output is not valid UTF-8.
- * `runGit` decodes lossily, which would mangle a non-UTF-8 filename and let a comparison miss it.
- */
-async function runGitLossless(
+const NUL_BYTE = 0x00;
+const TAB_BYTE = 0x09;
+const SPACE_BYTE = 0x20;
+const GITLINK_ENTRY_PREFIX = Buffer.from("160000 ");
+
+/** Runs git and returns its stdout undecoded, so a caller can inspect names that are not UTF-8. */
+async function runGitBytes(
   cwd: string,
   args: string[],
   timeout = COMMAND_TIMEOUT_MS,
-): Promise<string> {
+): Promise<Buffer> {
   const { stdout } = await execFileAsync("git", [...GIT_SAFETY_ARGS, "-C", cwd, ...args], {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
     env: gitEnv(),
     encoding: "buffer",
   });
-  const raw = stdout as Buffer;
-  const decoded = raw.toString("utf8");
-  if (!Buffer.from(decoded, "utf8").equals(raw)) {
-    throw new Error(`Git output in ${cwd} contains invalid UTF-8; refusing to proceed.`);
+  return stdout as Buffer;
+}
+
+/** Splits `-z` output on NUL into its non-empty records, byte for byte. */
+function nulSeparatedEntries(raw: Buffer): Buffer[] {
+  const entries: Buffer[] = [];
+  let start = 0;
+  for (let end = raw.indexOf(NUL_BYTE); end !== -1; end = raw.indexOf(NUL_BYTE, start)) {
+    if (end > start) entries.push(raw.subarray(start, end));
+    start = end + 1;
   }
-  return decoded;
+  if (start < raw.length) entries.push(raw.subarray(start));
+  return entries;
+}
+
+function hasPrefix(bytes: Buffer, prefix: Buffer): boolean {
+  return bytes.subarray(0, prefix.length).equals(prefix);
+}
+
+/** The path of an `ls-files -s -z` or `ls-tree -z` record: everything after its first tab. */
+function entryPathBytes(entry: Buffer): Buffer {
+  return entry.subarray(entry.indexOf(TAB_BYTE) + 1);
+}
+
+/**
+ * The paths of the submodule (mode 160000) entries in `ls-files -s -z` output. Only these paths are
+ * decoded, and strictly: a lossy decode would mangle a non-UTF-8 submodule path and let the
+ * comparison against the incoming tree miss it, so that one case fails closed. Every other tracked
+ * name, whatever its bytes, is skipped undecoded.
+ */
+function submodulePaths(dir: string, lsFilesOutput: Buffer): string[] {
+  const paths: string[] = [];
+  for (const entry of nulSeparatedEntries(lsFilesOutput)) {
+    if (!hasPrefix(entry, GITLINK_ENTRY_PREFIX)) continue;
+    const pathBytes = entryPathBytes(entry);
+    const path = pathBytes.toString("utf8");
+    if (!Buffer.from(path, "utf8").equals(pathBytes)) {
+      throw new Error(
+        `A submodule path in ${dir} is not valid UTF-8, so it cannot be checked against the incoming tree; refusing to proceed.`,
+      );
+    }
+    paths.push(path);
+  }
+  return paths;
 }
 
 /**
@@ -739,30 +777,25 @@ async function assertNoGitlinkToFileOverwrite(
   target: string,
   prNumber: number,
 ): Promise<void> {
-  const gitlinks = (await runGitLossless(dir, ["ls-files", "-s", "-z"]))
-    .split("\0")
-    .filter((entry) => entry.startsWith("160000 "));
-  if (gitlinks.length === 0) return;
-  const gitlinkPaths = gitlinks
-    .map((entry) => entry.slice(entry.indexOf("\t") + 1))
-    .filter(Boolean);
+  const gitlinkPaths = submodulePaths(dir, await runGitBytes(dir, ["ls-files", "-s", "-z"]));
   if (gitlinkPaths.length === 0) return;
 
   // Returns the mode of the exact entry at `path` in the target tree (or null when absent). A leaf
   // produces exactly the entry at `path`; a directory produces only its children (`path/…`).
+  // Compared as bytes, so a sibling with a non-UTF-8 name can neither match nor break it.
   const targetEntryMode = async (path: string): Promise<string | null> => {
-    const entries = (
-      await runGitLossless(dir, ["ls-tree", "-z", target, "--", `:(literal)${path}`])
-    )
-      .split("\0")
-      .filter(Boolean);
+    const wanted = Buffer.from(path, "utf8");
+    const childPrefix = Buffer.from(`${path}/`, "utf8");
+    const entries = nulSeparatedEntries(
+      await runGitBytes(dir, ["ls-tree", "-z", target, "--", `:(literal)${path}`]),
+    );
+    let hasChildren = false;
     for (const entry of entries) {
-      if (entry.slice(entry.indexOf("\t") + 1) === path) return entry.slice(0, entry.indexOf(" "));
+      const entryPath = entryPathBytes(entry);
+      if (entryPath.equals(wanted)) return entry.subarray(0, entry.indexOf(SPACE_BYTE)).toString();
+      if (hasPrefix(entryPath, childPrefix)) hasChildren = true;
     }
-    if (entries.some((entry) => entry.slice(entry.indexOf("\t") + 1).startsWith(`${path}/`))) {
-      return "040000";
-    }
-    return null;
+    return hasChildren ? "040000" : null;
   };
 
   // A gitlink that becomes anything but another gitlink (file, symlink, directory, or removed)
@@ -789,15 +822,21 @@ async function assertNoGitlinkToFileOverwrite(
   }
 }
 
+/** The checked-out branch, or null on a detached HEAD. A git failure is an error, not "detached". */
 async function currentBranch(repoDir: string): Promise<string | null> {
-  const name = await runGit(repoDir, ["branch", "--show-current"], 3_000).catch(() => "");
+  const name = await runGit(repoDir, ["branch", "--show-current"], 3_000);
   return name || null;
 }
 
+/** Remote branch names that stand in for a default branch the remote has not recorded. */
+const CONVENTIONAL_DEFAULT_BRANCHES = ["main", "master"];
+
 /**
  * New issue branches start from the remote default branch. Without a recorded remote default the
- * current HEAD is used, but only when a remote-tracking branch already contains it: a PR branch, a
- * detached PR checkout or a local-only commit would carry unmerged, possibly untrusted code.
+ * current HEAD is used, but only when it is already on the conventional default branch (`main` or
+ * `master`) of the remote: a PR branch, a detached PR checkout or a local-only commit would carry
+ * unmerged, possibly untrusted code. Being on some other remote branch, such as a pushed PR branch,
+ * does not count.
  */
 async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise<string> {
   const remoteHead = await runGit(
@@ -813,30 +852,38 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
     ).catch(() => "");
     if (resolved) return resolved;
   }
+  // One commit is checked and one is returned: another launch can move HEAD in between.
+  const head = await runGit(baseRoot, ["rev-parse", "--verify", "HEAD^{commit}"], 3_000);
   const branch = await currentBranch(baseRoot);
   if (branch?.startsWith("pr-radar/")) {
     throw new Error(
       `Base checkout ${baseRoot} is on ${branch} and has no recorded default branch for ${remote}; check out the default branch there, or use another directory.`,
     );
   }
-  const published = await runGit(
-    baseRoot,
-    [
-      "for-each-ref",
-      "--count=1",
-      "--contains",
-      "HEAD",
-      "--format=%(refname)",
-      `refs/remotes/${remote}`,
-    ],
-    3_000,
-  ).catch(() => "");
-  if (!published) {
-    throw new Error(
-      `Base checkout ${baseRoot} has no recorded default branch for ${remote} and its HEAD is not on any ${remote} branch, so it may carry unmerged code; run git remote set-head ${remote} --auto there, or check out the default branch.`,
+  for (const name of CONVENTIONAL_DEFAULT_BRANCHES) {
+    // `show-ref --verify` takes only the exact full ref name. `for-each-ref` would also match a
+    // branch named `main/x` by prefix, and `rev-parse` falls back to a tag literally named
+    // `refs/remotes/origin/main`; a pushed branch or tag could be named either way.
+    const ref = await runGit(
+      baseRoot,
+      ["show-ref", "--verify", "--hash", `refs/remotes/${remote}/${name}`],
+      3_000,
+    ).catch(() => "");
+    if (!ref) continue;
+    const tip = await runGit(baseRoot, ["rev-parse", "--verify", `${ref}^{commit}`], 3_000);
+    const published = await runGit(
+      baseRoot,
+      ["merge-base", "--is-ancestor", head, tip],
+      3_000,
+    ).then(
+      () => true,
+      () => false,
     );
+    if (published) return head;
   }
-  return runGit(baseRoot, ["rev-parse", "HEAD"], 3_000);
+  throw new Error(
+    `Base checkout ${baseRoot} has no recorded default branch for ${remote} and its HEAD is not on ${remote}/main or ${remote}/master, so it may carry unmerged code; run git remote set-head ${remote} --auto there, or check out the default branch.`,
+  );
 }
 
 async function refreshPrWorktree(
@@ -890,7 +937,60 @@ async function refreshIssueWorktree(worktreePath: string, localBranchName: strin
   await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Materializes a worktree that `worktree add --no-checkout` just registered. When the checkout
+ * fails, the half-created worktree is removed, so the next request does not find it by branch and
+ * hand back an unpopulated directory. If that removal fails too, both errors are reported: the
+ * original cause must not be lost, and the leftover worktree needs to be named.
+ */
+async function populateNewWorktree(baseRoot: string, worktreePath: string): Promise<void> {
+  try {
+    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
+  } catch (checkoutError) {
+    try {
+      // No short timeout: the cleanup must be allowed to finish.
+      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath]);
+    } catch (removalError) {
+      throw new AggregateError(
+        [checkoutError, removalError],
+        `Checking out the new worktree ${worktreePath} failed (${errorMessage(checkoutError)}), and removing the half-created worktree failed too (${errorMessage(removalError)}); remove it with git worktree remove --force.`,
+      );
+    }
+    throw checkoutError;
+  }
+}
+
+/**
+ * Launches whose workspace is being prepared right now, one entry per repository and item. Two
+ * launches for the same item would race into the same clone, branch and worktree (a double click,
+ * or two devices), so a second one is refused instead of queued: the queue stays empty, and the
+ * first launch's result is what the user sees.
+ */
+const launchesInFlight = new Set<string>();
+
 export async function prepareWorkspaceCwdHandler(
+  input: z.output<typeof prepareWorkspaceCwd.input>,
+  readSettings: ReadWorkspaceSettings,
+): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
+  const launchKey = `${input.repository.toLowerCase()}#${input.itemKind}-${input.prNumber}`;
+  if (launchesInFlight.has(launchKey)) {
+    throw new Error(
+      `A launch for ${input.itemKind} #${input.prNumber} of ${input.repository} is already preparing its workspace; wait for it to finish, then try again.`,
+    );
+  }
+  launchesInFlight.add(launchKey);
+  try {
+    return await prepareLockedWorkspaceCwd(input, readSettings);
+  } finally {
+    launchesInFlight.delete(launchKey);
+  }
+}
+
+async function prepareLockedWorkspaceCwd(
   input: z.output<typeof prepareWorkspaceCwd.input>,
   readSettings: ReadWorkspaceSettings,
 ): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
@@ -1025,6 +1125,16 @@ export async function prepareWorkspaceCwdHandler(
   // CWD-WORKTREE: reuse existing worktree for this PR/issue branch if present (never reuse baseRoot).
   const resolvedBaseRoot = resolve(baseRoot);
   const existingWorktrees = await listWorktrees(baseRoot);
+  // A CWD-BASE launch leaves the branch checked out in the base checkout, where `worktree add`
+  // cannot also use it. Refuse, naming it, rather than fail inside git or quietly work in the base.
+  const heldByBase = existingWorktrees.some(
+    (wt) => wt.branch === localBranchName && resolve(wt.path) === resolvedBaseRoot,
+  );
+  if (heldByBase) {
+    throw new Error(
+      `Branch ${localBranchName} is checked out in the base checkout ${baseRoot} (an earlier CWD-BASE launch), so a worktree cannot use it too; switch that checkout to another branch, or launch with CWD-BASE.`,
+    );
+  }
   const existing = existingWorktrees.find(
     (wt) => wt.branch === localBranchName && resolve(wt.path) !== resolvedBaseRoot,
   );
@@ -1114,14 +1224,7 @@ export async function prepareWorkspaceCwdHandler(
         startPoint,
       ]);
     }
-    try {
-      await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
-    } catch (err) {
-      // The worktree is already registered; a failed checkout must not leave a half-created one.
-      // No short timeout here: cleanup must complete, and a removal failure propagates (not swallowed).
-      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath]);
-      throw err;
-    }
+    await populateNewWorktree(baseRoot, worktreePath);
   } else {
     const prHead = await fetchPrHead(baseRoot, matchingRemote, input.prNumber);
     await assertBranchFastForwards(
@@ -1140,7 +1243,7 @@ export async function prepareWorkspaceCwdHandler(
       worktreePath,
       prHead,
     ]);
-    await runGit(worktreePath, ["checkout", "--force"], CLONE_TIMEOUT_MS);
+    await populateNewWorktree(baseRoot, worktreePath);
   }
 
   return {
