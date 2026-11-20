@@ -233,12 +233,17 @@ test("does not show the previous session's login in use once the agent's status 
   }
 });
 
-/** Lets queued query results reach the screen before asserting that something is absent. */
+/**
+ * Waits until no query is in flight, then lets React Query hand its results to the screen: it
+ * notifies on a zero-delay timer queued when the result landed, so a timer queued after it runs
+ * second. Only then can a test assert that something is absent.
+ */
 async function settle() {
+  await vi.waitFor(() => expect(client.isFetching()).toBe(0));
   await act(async () => {
-    const delay = Promise.withResolvers<void>();
-    setTimeout(delay.resolve, 50);
-    await delay.promise;
+    const flushed = Promise.withResolvers<void>();
+    setTimeout(flushed.resolve, 0);
+    await flushed.promise;
   });
 }
 
@@ -265,7 +270,9 @@ test("never shows an answer requested before the status changed, even when it la
     agent.logins = [login(false)];
     await show("closed", null);
     await show("idle", null);
-    await settle();
+    // The new answer is on screen: its login can be switched to, and nothing is in use. The first
+    // session's request is still held, so this waits for what the new answer draws.
+    await vi.waitFor(() => expect(container.textContent).toContain("Switch"));
     expect(container.textContent).not.toContain("IN USE");
 
     // The earlier request finally lands; it belongs to the old session and changes nothing.
