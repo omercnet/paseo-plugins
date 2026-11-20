@@ -45,13 +45,15 @@ const ROUTING_SCRIPT_PATH_DIRS = [
 
 export async function trustedScriptPath(
   uid: number | undefined = process.getuid?.(),
+  dirs: readonly string[] = ROUTING_SCRIPT_PATH_DIRS,
 ): Promise<string> {
   const trustedOwner = (owner: number) => uid === undefined || owner === uid || owner === 0;
   const verified = new Set<string>();
   const kept: string[] = [];
-  for (const dir of ROUTING_SCRIPT_PATH_DIRS) {
+  for (const dir of dirs) {
     try {
-      await assertTrustedDirectories(dir, trustedOwner, verified);
+      // Strict: a sticky bit stops others deleting each other's files, not creating a `python3`.
+      await assertTrustedDirectories(dir, trustedOwner, verified, false);
       kept.push(dir);
     } catch {
       // Missing, owned by another user, or writable by others: not searched.
@@ -62,11 +64,15 @@ export async function trustedScriptPath(
 
 type OwnerCheck = (owner: number) => boolean;
 
-/** `start` and every directory above it must have a trusted owner and not be group/other-writable. */
+/**
+ * `start` and every directory above it must have a trusted owner and not be group/other-writable.
+ * A sticky directory (like /tmp) is exempt from the write test unless `allowSticky` is false.
+ */
 async function assertTrustedDirectories(
   start: string,
   trustedOwner: OwnerCheck,
   verified: Set<string>,
+  allowSticky = true,
 ): Promise<void> {
   for (let dir = start; !verified.has(dir); dir = dirname(dir)) {
     const dirInfo = await stat(dir);
@@ -75,7 +81,7 @@ async function assertTrustedDirectories(
         `Routing script directory ${dir} is owned by another user; move the script somewhere you own, or run chown on it.`,
       );
     }
-    if ((dirInfo.mode & 0o022) !== 0 && (dirInfo.mode & STICKY_BIT) === 0) {
+    if ((dirInfo.mode & 0o022) !== 0 && !(allowSticky && (dirInfo.mode & STICKY_BIT) !== 0)) {
       throw new Error(
         `Routing script directory ${dir} must not be writable by group or others; run chmod go-w on it.`,
       );
@@ -223,10 +229,10 @@ function startScriptCapped(
     let exited = false;
     let killTimer: NodeJS.Timeout | undefined;
 
-    // Once the script has exited its process-group id is free to be reused, so later timers must
-    // not signal it; `force` is for the one SIGKILL sent as the script exits and the one in 'close'.
-    function signalGroup(signal: NodeJS.Signals, force = false): void {
-      if (exited && !force) return;
+    // Once the script has exited its process-group id is free to be reused, so nothing may signal
+    // it after the one SIGKILL sent from the 'exit' handler.
+    function signalGroup(signal: NodeJS.Signals): void {
+      if (exited) return;
       try {
         if (child.pid !== undefined) process.kill(-child.pid, signal);
       } catch {
@@ -285,13 +291,14 @@ function startScriptCapped(
     // pipes. A descendant that kept them open would otherwise delay 'close' until the timeout and a
     // script that exited 0 would be reported as timed out. Bytes the script already wrote stay in
     // the pipe, so 'close' still delivers the full output.
+    // That one kill is the only group signal once the script has ended: a `setsid` descendant can
+    // hold the pipes (and 'close') for up to the timeout, and by then the group id may belong to an
+    // unrelated process.
     child.on("exit", () => {
       signalGroup("SIGKILL");
       exited = true;
     });
     child.on("close", (code) => {
-      // Backstop: no descendant may outlive the script, whether it was asked to stop or exited.
-      signalGroup("SIGKILL", true);
       clearTimeout(killTimer);
       finishedGate.resolve();
       settle(() => {
@@ -353,9 +360,10 @@ export async function runRoutingScriptHandler(
   // Paseo gives a plugin request the same 30 s as one script run, so time spent queued comes out
   // of the run's own budget.
   const startedAt = performance.now();
-  const settings = await readSettings();
-  let scriptPath = await resolveRoutingScript(settings.routingScriptPath);
+  const budgetLeft = () => Math.floor(limits.timeoutMs - (performance.now() - startedAt));
 
+  // Take a place in line before the first await, so calls keep their arrival order however long
+  // each one's settings read and path check take, and the capacity check sees every earlier call.
   const queued = routingInFlight > 0;
   if (queued && routingWaiting >= MAX_QUEUED_ROUTING_CALLS) {
     throw new Error(ROUTING_BUSY_MESSAGE);
@@ -367,26 +375,39 @@ export async function runRoutingScriptHandler(
   void myTurn.promise.then(() => {
     routingInFlight -= 1;
   });
+  let waiting = queued;
+  if (waiting) routingWaiting += 1;
+  const stopWaiting = () => {
+    if (!waiting) return;
+    waiting = false;
+    routingWaiting -= 1;
+  };
 
   let run: ScriptRun;
   try {
-    let runLimits = limits;
+    const settings = await readSettings();
+    let scriptPath = await resolveRoutingScript(settings.routingScriptPath);
     if (queued) {
-      routingWaiting += 1;
       try {
-        await waitForTurn(previous, limits.timeoutMs - (performance.now() - startedAt));
+        await waitForTurn(previous, budgetLeft());
       } finally {
-        routingWaiting -= 1;
+        stopWaiting();
       }
       // The configuration may have changed while this call waited.
       scriptPath = await resolveRoutingScript((await readSettings()).routingScriptPath);
-      const remaining = Math.floor(limits.timeoutMs - (performance.now() - startedAt));
+    }
+    const path = await trustedScriptPath();
+    let runLimits = limits;
+    if (queued) {
+      // Taken last, after every await, so the script's own timer starts when the budget says.
+      const remaining = budgetLeft();
       if (remaining <= 0) throw new Error(ROUTING_BUSY_MESSAGE);
       runLimits = { ...limits, timeoutMs: remaining };
     }
-    run = startScriptCapped(scriptPath, input.payload, runLimits, await trustedScriptPath());
+    run = startScriptCapped(scriptPath, input.payload, runLimits, path);
   } catch (error) {
     // This call never ran: pass the turn on once the one in front is done, so the order holds.
+    stopWaiting();
     void previous.then(() => myTurn.resolve());
     throw error;
   }

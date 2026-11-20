@@ -322,6 +322,23 @@ describe("runRoutingScriptHandler", () => {
     expect(await trustedScriptPath()).toContain("/usr/bin");
   });
 
+  test("excludes a PATH directory that others can write even when it is sticky", async () => {
+    const root = makeRoot();
+    const plain = join(root, "plain");
+    const sticky = join(root, "sticky");
+    const open = join(root, "open");
+    for (const dir of [plain, sticky, open]) mkdirSync(dir);
+    chmodSync(plain, 0o755);
+    chmodSync(sticky, 0o1777);
+    chmodSync(open, 0o777);
+    const uid = process.getuid?.();
+    // The root directory itself is ours and 0755, so only the directory under test decides.
+    expect(await trustedScriptPath(uid, [plain, sticky, open])).toBe(plain);
+    // A sticky directory is still fine for the script's own directory chain (like /tmp).
+    const script = writeScript(sticky, "route.sh", "echo '{}'");
+    await expect(resolveRoutingScript(script)).resolves.toBe(script);
+  });
+
   test("resolves the interpreter on the fixed PATH, not through the daemon's", async () => {
     const root = makeRoot();
     const evil = join(root, "evil-bin");
@@ -437,6 +454,20 @@ describe("runRoutingScriptHandler", () => {
     await expectGone(Number(readFileSync(pidFile, "utf8").trim()));
   });
 
+  test("signals the process group once after a script exits, never again at close", async () => {
+    const root = makeRoot();
+    const script = writeScript(root, "quick3.sh", "echo '{}'");
+    const kill = vi.spyOn(process, "kill");
+    try {
+      await expect(route(script, {}, FAST_LIMITS)).resolves.toEqual({});
+      await waitForRoutingScriptIdleForTests();
+      const groupKills = kill.mock.calls.filter(([pid]) => typeof pid === "number" && pid < 0);
+      expect(groupKills.map(([, signal]) => signal)).toEqual(["SIGKILL"]);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
   test("keeps all of the output a script wrote just before it exited", async () => {
     const root = makeRoot();
     const reason = "x".repeat(800);
@@ -530,6 +561,35 @@ describe("runRoutingScriptHandler", () => {
       ]);
       // The queue drained: a later call goes straight through.
       await expect(route(d, {}, LONG)).resolves.toEqual({ reason: "d" });
+    });
+
+    test("keeps arrival order and counts waiters from the first await, however slow each preflight is", async () => {
+      const root = makeRoot();
+      const log = join(root, "log.txt");
+      const a = logging(root, "a", log, "0.8");
+      const b = logging(root, "b", log, "0.1");
+      const c = logging(root, "c", log, "0.1");
+      const d = logging(root, "d", log, "0.1");
+      const first = route(a, {}, LONG);
+      await vi.waitFor(() => expect(existsSync(log)).toBe(true));
+      const slowSettings = async () => {
+        await pause(250);
+        return { sourceCodeDir: "/nonexistent-source-dir", routingScriptPath: b };
+      };
+      // B arrives first but reads its settings slowly; C and D arrive in the same tick.
+      const second = runRoutingScriptHandler({ payload: {} }, slowSettings, LONG);
+      const third = route(c, {}, LONG);
+      const fourth = route(d, {}, LONG);
+      await expect(fourth).rejects.toThrow(/already running/);
+      await first;
+      await expect(second).resolves.toEqual({ reason: "b" });
+      await expect(third).resolves.toEqual({ reason: "c" });
+      expect(
+        readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .filter((line) => line.startsWith("start")),
+      ).toEqual(["start a", "start b", "start c"]);
     });
 
     test("refuses a queued call whose wait would outlast its budget, and keeps the order", async () => {
