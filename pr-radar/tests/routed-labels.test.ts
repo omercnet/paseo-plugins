@@ -189,6 +189,7 @@ describe("checkRoutedLabels: unsafe text and shape", () => {
 
   test("displayLabelKey writes invisible characters out and shortens long keys", () => {
     expect(displayLabelKey("a‮b\u0007")).toBe("a\\u{202E}b\\u{7}");
+    expect(displayLabelKey("a\\b")).toBe("a\\\\b");
     expect(displayLabelKey("x".repeat(100))).toBe(`${"x".repeat(64)}...`);
   });
 });

@@ -72,10 +72,12 @@ export function parseLabelPrefixes(raw: string): string[] {
 
 // Keys shown in a notice come from the script, so control and invisible characters are written out.
 export function displayLabelKey(key: string): string {
-  const escaped = key.replace(
-    ESCAPED_CHARS,
-    (char) => `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
-  );
+  const escaped = key
+    .replaceAll("\\", "\\\\")
+    .replace(
+      ESCAPED_CHARS,
+      (char) => `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
+    );
   return escaped.length > MAX_SHOWN_KEY_LEN ? `${escaped.slice(0, MAX_SHOWN_KEY_LEN)}...` : escaped;
 }
 

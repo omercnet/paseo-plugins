@@ -291,7 +291,7 @@ function ReadyPrRadarSettings({
           />
           <SettingsInput
             label="Allowed label prefixes"
-            hint="Routing script labels that start with one of these (comma or space separated) keep their name. Prefer exact keys such as ade.kind: a prefix admits every key under it. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
+            hint="Routing script labels that start with one of these (comma or space separated) keep their name. Prefer the narrowest prefix, such as ade.kind: a prefix admits every key that starts with it. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
             initialValue={settings.values.routingLabelPrefixes}
             placeholder="None: all script labels go under pr-radar.route."
             onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
