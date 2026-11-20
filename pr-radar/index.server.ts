@@ -1,4 +1,5 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { runRoutingScriptHandler } from "./server/routing-script";
 import {
   acknowledgeViewerUpdates,
   resolveViewerScope,
@@ -8,7 +9,6 @@ import {
   listLocalDirsHandler,
   prepareWorkspaceCwdHandler,
   type ReadWorkspaceSettings,
-  runRoutingScriptHandler,
 } from "./server/workspace-ops";
 import { prRadarSettings } from "./shared/settings";
 import {
