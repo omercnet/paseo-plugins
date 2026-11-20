@@ -178,9 +178,14 @@ function startScriptCapped(
       settle(() => rejectPromise(spawnError));
       finishedGate.resolve();
     });
+    // 'exit' fires when the script itself has ended, while 'close' waits for every holder of the
+    // pipes. A descendant that kept them open would otherwise delay 'close' until the timeout and a
+    // script that exited 0 would be reported as timed out. Bytes the script already wrote stay in
+    // the pipe, so 'close' still delivers the full output.
+    child.on("exit", () => signalGroup("SIGKILL"));
     child.on("close", (code) => {
-      // Having asked it to stop, make sure no descendant outlives the script.
-      if (terminating) signalGroup("SIGKILL");
+      // Backstop: no descendant may outlive the script, whether it was asked to stop or exited.
+      signalGroup("SIGKILL");
       clearTimeout(killTimer);
       finishedGate.resolve();
       settle(() => {
