@@ -22,17 +22,9 @@ import { listLocalDirs, prepareWorkspaceCwd, runRoutingScript } from "../shared/
 
 const tempDirs: string[] = [];
 
-// The handler reads the routing script from server-side settings.
-let routingScript = "";
-const readSettings = async () => ({
-  sourceCodeDir: "/nonexistent-source-dir",
-  routingScriptPath: routingScript,
-});
-
 afterEach(async () => {
   await waitForRoutingScriptIdleForTests();
   vi.unstubAllEnvs();
-  routingScript = "";
   for (const dir of tempDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -57,8 +49,11 @@ describe("runRoutingScriptHandler", () => {
     payload: Record<string, unknown> = {},
     limits?: RoutingScriptLimits,
   ) {
-    routingScript = script;
-    return runRoutingScriptHandler({ payload }, readSettings, limits);
+    return runRoutingScriptHandler(
+      { payload },
+      async () => ({ sourceCodeDir: "/nonexistent-source-dir", routingScriptPath: script }),
+      limits,
+    );
   }
 
   const FAST_LIMITS: RoutingScriptLimits = {
@@ -414,34 +409,117 @@ describe("runRoutingScriptHandler", () => {
     }
   });
 
-  test("keeps the one-at-a-time guard until the stubborn script has been killed", async () => {
+  test("a call queued behind a timed-out stubborn script starts only after it has been killed", async () => {
     const root = makeRoot();
+    const pidFile = join(root, "stubborn.pid");
     const stubborn = writeScript(
       root,
       "stubborn2.sh",
-      `trap '' TERM\nwhile :; do sleep 0.05; done`,
+      `echo $$ > "${pidFile}"\ntrap '' TERM\nwhile :; do sleep 0.05; done`,
     );
-    const limits = { timeoutMs: 300, outputBytes: 1024, killGraceMs: 400 };
-    await expect(route(stubborn, {}, limits)).rejects.toThrow(/timed out/);
-    // The call failed, but the script ignoring SIGTERM is still alive until SIGKILL goes out.
-    await expect(route(stubborn, {}, limits)).rejects.toThrow(/already running/);
-    const quick = writeScript(root, "quick.sh", "echo '{}'");
-    await vi.waitFor(async () => expect(await route(quick, {}, limits)).toEqual({}), {
-      timeout: 3_000,
-      interval: 100,
-    });
+    const first = route(stubborn, {}, { timeoutMs: 300, outputBytes: 1024, killGraceMs: 400 });
+    const firstResult = expect(first).rejects.toThrow(/timed out/);
+    await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+    // The next call queues behind the script that ignores SIGTERM and must not overlap it.
+    const probe = writeScript(
+      root,
+      "probe.sh",
+      `if kill -0 "$(cat "${pidFile}")" 2>/dev/null; then echo '{"reason":"overlap"}'; else echo '{}'; fi`,
+    );
+    const second = route(probe, {}, { timeoutMs: 5_000, outputBytes: 1024, killGraceMs: 200 });
+    await firstResult;
+    await expect(second).resolves.toEqual({});
   });
 
-  test("runs one script at a time", async () => {
-    const root = makeRoot();
-    const started = join(root, "started");
-    const slow = writeScript(root, "slow.sh", `touch "${started}"\nsleep 0.5\necho '{}'`);
-    const first = route(slow, {}, FAST_LIMITS);
-    await vi.waitFor(() => expect(existsSync(started)).toBe(true));
-    await expect(route(slow, {}, FAST_LIMITS)).rejects.toThrow(/already running/);
-    await expect(first).resolves.toEqual({});
-    rmSync(started);
-    await expect(route(slow, {}, FAST_LIMITS)).resolves.toEqual({});
+  describe("queue", () => {
+    const LONG = { timeoutMs: 5_000, outputBytes: 1024, killGraceMs: 200 };
+    const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+    // Appends "start NAME" / "end NAME" to one log so the order of the runs can be read back.
+    function logging(root: string, name: string, log: string, seconds: string): string {
+      return writeScript(
+        root,
+        `${name}.sh`,
+        `echo "start ${name}" >> "${log}"\nsleep ${seconds}\necho "end ${name}" >> "${log}"\necho '{"reason":"${name}"}'`,
+      );
+    }
+
+    test("runs a second call after the first, in order, and refuses a fourth", async () => {
+      const root = makeRoot();
+      const log = join(root, "log.txt");
+      const a = logging(root, "a", log, "0.8");
+      const b = logging(root, "b", log, "0.1");
+      const c = logging(root, "c", log, "0.1");
+      const d = logging(root, "d", log, "0.1");
+      const first = route(a, {}, LONG);
+      await vi.waitFor(() => expect(existsSync(log)).toBe(true));
+      const second = route(b, {}, LONG);
+      await pause(150);
+      const third = route(c, {}, LONG);
+      await pause(150);
+      await expect(route(d, {}, LONG)).rejects.toThrow(/already running/);
+      await expect(first).resolves.toEqual({ reason: "a" });
+      await expect(second).resolves.toEqual({ reason: "b" });
+      await expect(third).resolves.toEqual({ reason: "c" });
+      expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([
+        "start a",
+        "end a",
+        "start b",
+        "end b",
+        "start c",
+        "end c",
+      ]);
+      // The queue drained: a later call goes straight through.
+      await expect(route(d, {}, LONG)).resolves.toEqual({ reason: "d" });
+    });
+
+    test("refuses a queued call whose wait would outlast its budget, and keeps the order", async () => {
+      const root = makeRoot();
+      const pidFile = join(root, "stubborn.pid");
+      const stubborn = writeScript(
+        root,
+        "stubborn3.sh",
+        `echo $$ > "${pidFile}"\ntrap '' TERM\nwhile :; do sleep 0.05; done`,
+      );
+      // Killed 300 + 800 ms after it starts; the second call only has 500 ms in all.
+      const first = route(stubborn, {}, { timeoutMs: 300, outputBytes: 1024, killGraceMs: 800 });
+      const firstResult = expect(first).rejects.toThrow(/timed out/);
+      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+      const quick = writeScript(root, "quick2.sh", "echo '{}'");
+      await expect(
+        route(quick, {}, { timeoutMs: 500, outputBytes: 1024, killGraceMs: 200 }),
+      ).rejects.toThrow(/already running/);
+      await firstResult;
+      // The refused call left the queue without letting a later one overtake the stubborn script.
+      const probe = writeScript(
+        root,
+        "probe2.sh",
+        `if kill -0 "$(cat "${pidFile}")" 2>/dev/null; then echo '{"reason":"overlap"}'; else echo '{}'; fi`,
+      );
+      await expect(route(probe, {}, LONG)).resolves.toEqual({});
+    });
+
+    test("a queued call's script gets only what is left of its budget", async () => {
+      const root = makeRoot();
+      const log = join(root, "log.txt");
+      const slow = logging(root, "slow", log, "0.8");
+      const hang = writeScript(root, "hang.sh", "sleep 30");
+      const limits = { timeoutMs: 1_200, outputBytes: 1024, killGraceMs: 200 };
+      const first = route(slow, {}, limits);
+      await vi.waitFor(() => expect(existsSync(log)).toBe(true));
+      const startedAt = Date.now();
+      const second = route(hang, {}, limits);
+      const failure = await second.then(
+        () => null,
+        (error: Error) => error,
+      );
+      expect(failure?.message).toMatch(/timed out after \d+ms/);
+      const ranFor = Number(failure?.message.match(/after (\d+)ms/)?.[1]);
+      expect(ranFor).toBeLessThan(1_200);
+      // Unshortened the call would have run for its own 1.2 s after waiting for the first one.
+      expect(Date.now() - startedAt).toBeLessThan(1_700);
+      await first;
+    });
   });
 
   test("reports an unsupported platform on Windows", async () => {
