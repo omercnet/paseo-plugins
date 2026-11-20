@@ -34,8 +34,8 @@ import {
   useAgentLaunchOptions,
 } from "./agent-launch-options";
 import {
-  addFallbackRule,
   createSettingsSaveQueue,
+  fallbackRuleAdder,
   removeFallbackRule,
   type SettingsPatch,
 } from "./settings-save";
@@ -153,21 +153,20 @@ function ReadyPrRadarSettings({
       setRuleError(parsedRule.error);
       return;
     }
-    const listed = latestSettingsRef.current.values.routingLabelFallbacks;
-    if (addFallbackRule(listed, parsedRule.rule).length === listed.length) {
+    setRuleError(null);
+    // Whether the rule is already listed is decided inside the save queue, on the list that holds
+    // every edit queued before this one, not on the rendered settings (which lag a pending save).
+    const adder = fallbackRuleAdder(parsedRule.rule);
+    const saved = await savePatch(adder.patch);
+    if (!saved) return;
+    if (adder.wasDuplicate()) {
       setRuleError(
         "A rule for this repository and end time already exists. Remove it first to change its note.",
       );
       return;
     }
-    setRuleError(null);
-    const saved = await savePatch((latest) => ({
-      routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, parsedRule.rule),
-    }));
-    if (saved) {
-      setRuleText("");
-      setRuleInputKey((key) => key + 1);
-    }
+    setRuleText("");
+    setRuleInputKey((key) => key + 1);
   }
 
   async function handleReset() {

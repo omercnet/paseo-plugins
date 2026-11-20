@@ -23,12 +23,19 @@ export interface SettingsSaveQueueDeps<Values> {
   report(message: string | null): void;
   /** Sleeps; replaceable so a test controls the clock. Defaults to setTimeout. */
   wait?(ms: number): Promise<void>;
-  /** The time in milliseconds that bounds the wait; replaceable like `wait`. Defaults to Date.now. */
+  /** A monotonic time in milliseconds that bounds the wait; replaceable like `wait`. Defaults to performance.now. */
   now?(): number;
 }
 
 const RETRY_POLL_MS = 20;
 const RETRY_MAX_WAIT_MS = 1000;
+
+// A clock that never steps back: a wall clock set backwards (a time sync, a manual change) would
+// keep the wait polling past its deadline and hold up every later save. Falls back to the wall
+// clock only where `performance` does not exist.
+function monotonicNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
 
 interface QueuedPatch<Values> {
   patch: SettingsPatch<Values>;
@@ -71,7 +78,7 @@ export function createSettingsSaveQueue<Values extends object>(
   // on it. Resolves null when none arrives.
   async function newerThan(revision: string): Promise<{ values: Values; revision: string } | null> {
     const wait = deps.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
-    const now = deps.now ?? Date.now;
+    const now = deps.now ?? monotonicNow;
     const deadline = now() + RETRY_MAX_WAIT_MS;
     for (;;) {
       const newest = deps.latest();
@@ -149,6 +156,22 @@ export function addFallbackRule<Rule extends RuleIdentity>(
   rule: Rule,
 ): Rule[] {
   return rules.some((existing) => sameTarget(existing, rule)) ? [...rules] : [...rules, rule];
+}
+
+// An add-rule patch that also tells the caller whether the add changed anything. The question is
+// answered by the list the patch last ran on inside the save queue, which holds every edit queued
+// before it, so a rule whose removal is still pending is not "already there" and a rule whose
+// add is still pending is. (A check against the rendered settings would see neither.)
+export function fallbackRuleAdder<Rule extends RuleIdentity>(rule: Rule) {
+  let duplicate = false;
+  return {
+    patch(latest: { routingLabelFallbacks: readonly Rule[] }) {
+      const next = addFallbackRule(latest.routingLabelFallbacks, rule);
+      duplicate = next.length === latest.routingLabelFallbacks.length;
+      return { routingLabelFallbacks: next };
+    },
+    wasDuplicate: () => duplicate,
+  };
 }
 
 // Removes a rule from the newest list by what it says, not by its position: the position the

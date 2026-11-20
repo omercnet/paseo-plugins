@@ -1,7 +1,8 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   addFallbackRule,
   createSettingsSaveQueue,
+  fallbackRuleAdder,
   removeFallbackRule,
   type SettingsParse,
 } from "../client/settings-save";
@@ -16,6 +17,8 @@ const ruleC: LabelFallbackRule = { repository: "acme/c", until: "2026-11-27T18:0
 // A test waits on a promise instead of a clock. This bound only turns a hang (a gate that never
 // opens) into a failure that names what was awaited; it never decides how events interleave.
 const GATE_LIMIT_MS = 2000;
+// How far the fake clock moves for one wait of the queue (its own step is 20 ms; the bound 1000).
+const LATE_WAIT_MS = 600;
 
 function bounded<T>(gate: Promise<T>, awaited: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -93,10 +96,12 @@ function fakeHost(initial: Doc) {
         });
       }),
     report: (message) => reports.push(message),
-    // The queue's bound on its wait counts this clock, which moves only when the queue waits.
+    // The queue's bound on its wait reads this clock, which moves only when the queue waits and by
+    // more than the step it asked for (a slow or throttled timer), so a loop that counts its waits
+    // instead of reading the clock runs 50 times and is told apart from one that reads it.
     now: () => clock,
-    wait: (ms) => {
-      clock += ms;
+    wait: () => {
+      clock += LATE_WAIT_MS;
       waits += 1;
       return new Promise<void>((release) => events.push({ kind: "wait", release }));
     },
@@ -245,9 +250,10 @@ describe("settings save queue", () => {
     host.refuseAllWrites();
     const refused = host.save({ routingLabelPrefixes: "x.y" });
     expect(await host.finishAll(refused)).toEqual([false]);
-    // One refusal, no repeat of it, and a wait of exactly the bound (1000 ms in 20 ms steps).
+    // One refusal, no repeat of it, and a wait that ends when the clock passes the 1000 ms bound:
+    // two waits of 600 ms, not the 50 waits of 20 ms a count of timers would make.
     expect(host.attempts.filter((attempt) => !attempt.accepted)).toHaveLength(1);
-    expect(host.waits() - waitsBefore).toBe(50);
+    expect(host.waits() - waitsBefore).toBe(2);
     expect(host.reports.at(-1)).toMatch(/^Settings were not saved: /);
   });
 
@@ -269,6 +275,75 @@ describe("settings save queue", () => {
     const second = host.save({ routingLabelPrefixes: "c.d" });
     write.reply();
     expect(await host.finishAll(first, second)).toEqual([false, false]);
+  });
+
+  test("re-adding a rule whose removal is still pending adds it back, and says it changed something", async () => {
+    const host = fakeHost({ ...empty, routingLabelFallbacks: [ruleA] });
+    const removed = host.save(remove(ruleA));
+    const write = await host.nextWrite();
+    // The screen still shows rule A (the removal has not rendered), yet the add must go through.
+    const adder = fallbackRuleAdder(ruleA);
+    const added = host.save(adder.patch);
+    write.reply();
+    expect(await host.finishAll(removed, added)).toEqual([true, true]);
+    expect(adder.wasDuplicate()).toBe(false);
+    expect(host.stored().routingLabelFallbacks).toEqual([ruleA]);
+  });
+
+  test("adding a rule whose add is still pending is a duplicate and changes nothing", async () => {
+    const host = fakeHost(empty);
+    const first = fallbackRuleAdder(ruleA);
+    const firstSave = host.save(first.patch);
+    const write = await host.nextWrite();
+    const second = fallbackRuleAdder<LabelFallbackRule>({ ...ruleA, note: "later note" });
+    const secondSave = host.save(second.patch);
+    write.reply();
+    expect(await host.finishAll(firstSave, secondSave)).toEqual([true, true]);
+    expect(first.wasDuplicate()).toBe(false);
+    expect(second.wasDuplicate()).toBe(true);
+    // The rule saved first stays as it was, note and all.
+    expect(host.stored().routingLabelFallbacks).toEqual([ruleA]);
+  });
+
+  test("an add is judged again on each run, so a retry on a newer document decides afresh", async () => {
+    const host = fakeHost(empty);
+    const adder = fallbackRuleAdder(ruleA);
+    const added = host.save(adder.patch);
+    const write = await host.nextWrite();
+    // Another client saves the same rule first; the refused write is retried on that document.
+    host.otherClientSaves({ ...empty, routingLabelFallbacks: [ruleA] });
+    write.reply();
+    expect(await host.finishAll(added)).toEqual([true]);
+    expect(adder.wasDuplicate()).toBe(true);
+    expect(host.stored().routingLabelFallbacks).toEqual([ruleA]);
+  });
+
+  test("the wait for a newer revision is bounded by a clock that cannot step back", async () => {
+    // The wall clock is set back on every read (a time sync gone wrong) while the monotonic clock
+    // moves forward 600 ms per read: a wait bounded by Date.now would poll until the guard stops it.
+    let wall = 1_000_000_000_000;
+    let monotonic = 0;
+    const wallSpy = vi.spyOn(Date, "now").mockImplementation(() => (wall -= 60_000));
+    const monotonicSpy = vi.spyOn(performance, "now").mockImplementation(() => (monotonic += 600));
+    let waits = 0;
+    try {
+      const save = createSettingsSaveQueue<Doc>({
+        latest: () => ({ values: empty, revision: "1" }),
+        remember: () => {},
+        parse: (values) => ({ success: true, data: values }),
+        write: async () => false,
+        report: () => {},
+        wait: async () => {
+          waits += 1;
+          if (waits > 200) throw new Error("the wait was never bounded");
+        },
+      });
+      expect(await save({ routingLabelPrefixes: "x.y" })).toBe(false);
+      expect(waits).toBeLessThanOrEqual(3);
+    } finally {
+      wallSpy.mockRestore();
+      monotonicSpy.mockRestore();
+    }
   });
 
   test("an invalid result reports the first problem and writes nothing", async () => {
