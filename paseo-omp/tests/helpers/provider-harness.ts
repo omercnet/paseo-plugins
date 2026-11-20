@@ -22,6 +22,7 @@ import type {
   OmpHostToolResult,
   OmpHostToolUpdate,
   OmpImage,
+  OmpLogoutAccount,
   OmpMessage,
   OmpModel,
   OmpPersistedSessionMessages,
@@ -561,6 +562,12 @@ export class FakeOmpSession implements OmpRuntimeSession {
   async steerSubagent(subagentId: string, message: string) {
     this.subagentSteers.push({ subagentId, message });
     if (this.subagentControlError) throw this.subagentControlError;
+  }
+
+  logoutAccounts: OmpLogoutAccount[] = [];
+
+  async getLogoutAccounts(_providerId: string) {
+    return this.logoutAccounts;
   }
 
   getSubagentMessages(selector: { subagentId?: string; sessionFile?: string }) {

@@ -10,7 +10,7 @@ import {
   useToast,
 } from "@getpaseo/plugin/client/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactElement, type ReactNode, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import {
   cancelOmpAccountLogin,
@@ -41,7 +41,7 @@ import {
 } from "./omp-accounts-state";
 import type { OmpConfigStyles } from "./omp-config-styles";
 import { ompStoreKey } from "./omp-store-state";
-import { quotaResetLabel, quotaSeverityFromFraction } from "./quota-state";
+import { quotaProviderIconName, quotaResetLabel, quotaSeverityFromFraction } from "./quota-state";
 
 type Theme = PluginSurfaceProps["theme"];
 
@@ -189,7 +189,7 @@ function AccountCard({
   const reserveShown = reserveOptions(account, defaultReservePct);
   const age = usageAgeLabel(account);
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, { flex: 1 }]}>
       <View style={styles.cardHeader}>
         <View
           style={{
@@ -200,9 +200,26 @@ function AccountCard({
             flexShrink: 1,
           }}
         >
-          <Text numberOfLines={1} style={[styles.cardTitle, { flexShrink: 1 }]}>
-            {account.label}
-          </Text>
+          {/* Cards wrap into columns away from their provider heading, so each names its own.
+              The icon stays on the name's line; only the badges wrap below a long name. */}
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              flexShrink: 1,
+              minWidth: 0,
+            }}
+          >
+            <Icon
+              name={quotaProviderIconName(account.provider)}
+              size={16}
+              color={theme.colors.foreground}
+            />
+            <Text numberOfLines={1} style={[styles.cardTitle, { flexShrink: 1 }]}>
+              {account.label}
+            </Text>
+          </View>
           {account.tags.map((tag) => (
             <View key={tag} style={styles.chip}>
               <Text numberOfLines={1} style={styles.chipText}>
@@ -273,6 +290,28 @@ function AccountCard({
           }
         />
       ) : null}
+    </View>
+  );
+}
+
+/** Fixed account card width: wide enough for the label, badges and the reserve picker on one row. */
+const ACCOUNT_CARD_WIDTH = 440;
+const ACCOUNT_GRID_GAP = 10;
+
+/**
+ * Fixed-width account cards that wrap, as many to a row as the page fits, instead of each card
+ * stretching across the page. Nothing is measured, so resizing never flips the column count back.
+ * A page narrower than one card shrinks the card to the page.
+ */
+function AccountGrid({ children }: { children: ReactElement[] }) {
+  return (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: ACCOUNT_GRID_GAP }}>
+      {children.map((child) => (
+        // Each wrapper takes its card's key, so a removed login never shifts another card's state.
+        <View key={child.key} style={{ width: ACCOUNT_CARD_WIDTH, maxWidth: "100%" }}>
+          {child}
+        </View>
+      ))}
     </View>
   );
 }
@@ -838,7 +877,14 @@ export function OmpAccountsSection({
       ) : null}
       {groups.map(({ provider, accounts: logins }) => (
         <View key={provider.id} style={{ gap: 8 }}>
-          <Text style={styles.cardTitle}>{provider.name}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Icon
+              name={quotaProviderIconName(provider.id)}
+              size={18}
+              color={theme.colors.foreground}
+            />
+            <Text style={styles.cardTitle}>{provider.name}</Text>
+          </View>
           {view?.balance
             .filter((preview) => preview.provider === provider.id)
             .map((preview) => (
@@ -846,19 +892,21 @@ export function OmpAccountsSection({
                 {balanceLine(preview)}
               </Text>
             ))}
-          {logins.map((account) => (
-            <AccountCard
-              key={accountKey(account)}
-              account={account}
-              theme={theme}
-              styles={styles}
-              defaultReservePct={defaultReserve}
-              saving={steer.isPending}
-              onRemove={() => setPending({ kind: "remove", account })}
-              onRedeem={() => setPending({ kind: "reset", account })}
-              onSteer={(change) => steer.mutate({ kind: "account", account, ...change })}
-            />
-          ))}
+          <AccountGrid>
+            {logins.map((account) => (
+              <AccountCard
+                key={accountKey(account)}
+                account={account}
+                theme={theme}
+                styles={styles}
+                defaultReservePct={defaultReserve}
+                saving={steer.isPending}
+                onRemove={() => setPending({ kind: "remove", account })}
+                onRedeem={() => setPending({ kind: "reset", account })}
+                onSteer={(change) => steer.mutate({ kind: "account", account, ...change })}
+              />
+            ))}
+          </AccountGrid>
         </View>
       ))}
       {view?.installed && view.fetchedAt !== null ? (
