@@ -3,8 +3,7 @@ import type {
   PluginPopoverProps,
   PluginSidebarItemProps,
 } from "@getpaseo/plugin/client";
-import { ScrollView } from "@getpaseo/plugin/client/react-native";
-import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import { ScrollView, SidebarRow } from "@getpaseo/plugin/client/ui";
 import { useState, useSyncExternalStore } from "react";
 import { Pressable, Text, View } from "react-native";
 import { describeRefresh, type WorkspaceSummary } from "./workspace-summary";

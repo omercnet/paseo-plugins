@@ -4,8 +4,7 @@ import contribute from "../index.client";
 import { workspaceFreshness } from "../shared/workspace-freshness";
 
 vi.mock("react-native", () => ({ Text: "Text", View: "View", Pressable: "Pressable" }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ ScrollView: "ScrollView" }));
-vi.mock("@getpaseo/plugin/client/ui", () => ({ SidebarRow: () => null }));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ ScrollView: "ScrollView", SidebarRow: () => null }));
 
 interface WorkspaceUpdate {
   kind: "upsert";
