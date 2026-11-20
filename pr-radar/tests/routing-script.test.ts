@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  ROUTING_SCRIPT_PATH,
   type RoutingScriptLimits,
   resolveRoutingScript,
   runRoutingScriptHandler,
@@ -278,6 +279,36 @@ describe("runRoutingScriptHandler", () => {
     expect(seen).toContain("LC_ALL=C");
     expect(seen).not.toContain("PR_RADAR_TEST_SECRET");
     expect(seen).not.toContain("GITHUB_TOKEN");
+  });
+
+  test("runs the script with a fixed PATH, not the daemon's", async () => {
+    const root = makeRoot();
+    const pathFile = join(root, "path.txt");
+    const evil = join(root, "evil-bin");
+    mkdirSync(evil);
+    vi.stubEnv("PATH", `${evil}:/usr/bin:/bin`);
+    const script = writeScript(root, "path.sh", `echo "$PATH" > "${pathFile}"\necho '{}'`);
+    await route(script);
+    expect(readFileSync(pathFile, "utf8").trim()).toBe(ROUTING_SCRIPT_PATH);
+    expect(ROUTING_SCRIPT_PATH.split(":").every((dir) => dir.startsWith("/"))).toBe(true);
+    expect(ROUTING_SCRIPT_PATH).not.toContain(evil);
+  });
+
+  test("resolves the interpreter on the fixed PATH, not through the daemon's", async () => {
+    const root = makeRoot();
+    const evil = join(root, "evil-bin");
+    mkdirSync(evil);
+    const marker = join(root, "planted-ran");
+    // A planted interpreter that would answer if `env` searched the inherited PATH.
+    const planted = join(evil, "pr-radar-test-interpreter");
+    writeFileSync(planted, `#!/bin/sh\ntouch "${marker}"\necho '{}'\n`);
+    chmodSync(planted, 0o755);
+    vi.stubEnv("PATH", `${evil}:/usr/bin:/bin`);
+    const script = join(root, "env-shebang.sh");
+    writeFileSync(script, "#!/usr/bin/env pr-radar-test-interpreter\n");
+    chmodSync(script, 0o755);
+    await expect(route(script)).rejects.toThrow();
+    expect(existsSync(marker)).toBe(false);
   });
 
   test("kills the script and fails once its output passes the byte cap", async () => {

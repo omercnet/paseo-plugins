@@ -28,6 +28,12 @@ const DEFAULT_ROUTING_LIMITS: RoutingScriptLimits = {
 
 const STICKY_BIT = 0o1000;
 
+// The script's PATH. The daemon's own PATH can list directories other users or tools write to
+// (~/.local/bin, a project's node_modules/.bin), and the script's `#!/usr/bin/env interpreter` line
+// would search it. These are the system and Homebrew directories; a script that needs a tool
+// elsewhere should name it by absolute path.
+export const ROUTING_SCRIPT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+
 type OwnerCheck = (owner: number) => boolean;
 
 /** `start` and every directory above it must have a trusted owner and not be group/other-writable. */
@@ -171,7 +177,7 @@ function startScriptCapped(
     try {
       child = spawn(scriptPath, [], {
         stdio: ["pipe", "pipe", "pipe"],
-        env: allowListedEnv(new Set()),
+        env: { ...allowListedEnv(new Set()), PATH: ROUTING_SCRIPT_PATH },
         detached: true,
       });
     } catch (spawnError) {
