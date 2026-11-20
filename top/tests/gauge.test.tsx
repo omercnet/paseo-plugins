@@ -30,7 +30,7 @@ vi.mock("react-native", () => ({
     View: "AnimatedView",
   },
 }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon" }));
 
 const theme = {
   colors: {
