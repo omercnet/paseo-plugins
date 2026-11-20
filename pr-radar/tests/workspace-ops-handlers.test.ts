@@ -1412,6 +1412,20 @@ describe("issue start point without a remote default", () => {
     expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
   });
 
+  test("does not take a tag named like the remote default branch for it", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "https://github.com/owner/repo.git");
+    gitIn(repoDir, ["checkout", "-b", "fix-the-thing"]);
+    commitFile(repoDir, "pushed-pr.txt");
+    gitIn(repoDir, ["update-ref", "-d", "refs/remotes/origin/main"]);
+    gitIn(repoDir, ["tag", "refs/remotes/origin/main", "HEAD"]);
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/HEAD is not on origin\/main or origin\/master/);
+    expect(gitIn(repoDir, ["branch", "--list", "pr-radar/issue-12"])).toBe("");
+  });
+
   test("accepts a HEAD that the remote master branch contains", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");

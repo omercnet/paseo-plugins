@@ -861,14 +861,16 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
     );
   }
   for (const name of CONVENTIONAL_DEFAULT_BRANCHES) {
-    // The full ref name resolves exactly this ref. `for-each-ref` would also match a branch named
-    // `main/x` by prefix, and a pushed PR branch could be named that.
-    const tip = await runGit(
+    // `show-ref --verify` takes only the exact full ref name. `for-each-ref` would also match a
+    // branch named `main/x` by prefix, and `rev-parse` falls back to a tag literally named
+    // `refs/remotes/origin/main`; a pushed branch or tag could be named either way.
+    const ref = await runGit(
       baseRoot,
-      ["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${name}^{commit}`],
+      ["show-ref", "--verify", "--hash", `refs/remotes/${remote}/${name}`],
       3_000,
     ).catch(() => "");
-    if (!tip) continue;
+    if (!ref) continue;
+    const tip = await runGit(baseRoot, ["rev-parse", "--verify", `${ref}^{commit}`], 3_000);
     const published = await runGit(
       baseRoot,
       ["merge-base", "--is-ancestor", head, tip],
