@@ -200,15 +200,20 @@ async function searchIssues(
       "--order=desc",
       `--json=${fields}`,
     ]);
-    const parsed = JSON.parse(output);
-    return {
-      records: Array.isArray(parsed) ? (parsed as IssueSearchRecord[]) : [],
-      failed: false,
-    };
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) return { records: [], failed: true };
+    return { records: parsed as IssueSearchRecord[], failed: false };
   } catch {
     return { records: [], failed: true };
   }
 }
+
+/** When one issue matches several searches it is shown under the highest-ranked role. */
+const ISSUE_ROLE_RANK: Record<GitHubIssueItem["role"], number> = {
+  owner: 0,
+  assignee: 1,
+  author: 2,
+};
 
 function toIssueItem(record: IssueSearchRecord, role: GitHubIssueItem["role"]): GitHubIssueItem {
   const labels = record.labels.map(({ name }) => name);
@@ -476,12 +481,23 @@ interface Snapshot {
   issueItems: GitHubIssueItem[];
   issueTruncated: boolean;
   issueSearchFailures: number;
+  /** When each role's issue search last succeeded (ms); a role's kept issues age from here. */
+  issueFreshAt: Record<GitHubIssueItem["role"], number>;
+  /** Whether each role's list hit the search cap; a kept role keeps its flag. */
+  issueTruncatedBy: Record<GitHubIssueItem["role"], boolean>;
   enrichmentFailures: number;
   acknowledgedAt: string | null;
 }
 
-/** The expensive part: ~5 s of gh searches and GraphQL enrichment. */
-async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
+/**
+ * The expensive part: ~5 s of gh searches and GraphQL enrichment. `previous` is the window's last
+ * snapshot: a failed issue search keeps its role's share of the issues it held, since an empty
+ * answer from a failed call says nothing about the issues. Only for the same viewer, and only
+ * while that role's last good search is within MAX_STALE_MS, so failures cannot hide behind old
+ * data forever (the coverage note keeps reporting them). A snapshot holding kept issues can still
+ * be served for up to MAX_STALE_MS more if the refreshes after it throw outright.
+ */
+async function fetchSnapshot(windowDays: number, previous?: Snapshot): Promise<Snapshot> {
   const viewer = await viewerLogin();
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString().slice(0, 10);
   const [
@@ -507,10 +523,38 @@ async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
     issueMap.set(record.id, toIssueItem(record, "assignee"));
   for (const record of authoredIssues.records)
     issueMap.set(record.id, toIssueItem(record, "author"));
-  const issueTruncated =
-    authoredIssues.records.length === SEARCH_LIMIT ||
-    assignedIssues.records.length === SEARCH_LIMIT ||
-    ownedIssues.records.length === SEARCH_LIMIT;
+  const searchedAt = Date.now();
+  const kept = previous?.viewer === viewer ? previous : undefined;
+  const searches = [
+    ["author", authoredIssues],
+    ["assignee", assignedIssues],
+    ["owner", ownedIssues],
+  ] as const;
+  const issueFreshAt = { author: 0, assignee: 0, owner: 0 };
+  const issueTruncatedBy = { author: false, assignee: false, owner: false };
+  const keptRoles = new Set<GitHubIssueItem["role"]>();
+  for (const [role, result] of searches) {
+    if (!result.failed) {
+      issueFreshAt[role] = searchedAt;
+      issueTruncatedBy[role] = result.records.length === SEARCH_LIMIT;
+    } else if (kept) {
+      issueFreshAt[role] = kept.issueFreshAt[role];
+      if (searchedAt - issueFreshAt[role] <= MAX_STALE_MS) {
+        keptRoles.add(role);
+        issueTruncatedBy[role] = kept.issueTruncatedBy[role];
+      }
+    }
+  }
+  for (const item of kept?.issueItems ?? []) {
+    if (!keptRoles.has(item.role)) continue;
+    const fresh = issueMap.get(item.id);
+    if (!fresh) issueMap.set(item.id, item);
+    // Fresh fields win, but the kept row remembers a higher-ranked role whose search failed.
+    else if (ISSUE_ROLE_RANK[item.role] > ISSUE_ROLE_RANK[fresh.role]) {
+      issueMap.set(item.id, { ...fresh, role: item.role });
+    }
+  }
+  const issueTruncated = Object.values(issueTruncatedBy).some(Boolean);
   const issueSearchFailures = [authoredIssues, assignedIssues, ownedIssues].filter(
     (res) => res.failed,
   ).length;
@@ -576,6 +620,8 @@ async function fetchSnapshot(windowDays: number): Promise<Snapshot> {
     issueItems,
     issueTruncated,
     issueSearchFailures,
+    issueFreshAt,
+    issueTruncatedBy,
     enrichmentFailures: enrichment.failures,
     acknowledgedAt,
   };
@@ -598,7 +644,7 @@ export function projectSnapshot(snapshot: Snapshot, urls: string[]): ViewerScope
   }
   if (snapshot.issueSearchFailures > 0) {
     notes.push(
-      `${snapshot.issueSearchFailures} GitHub issue search request${snapshot.issueSearchFailures === 1 ? "" : "s"} failed; issue list may be incomplete.`,
+      `${snapshot.issueSearchFailures} GitHub issue search request${snapshot.issueSearchFailures === 1 ? "" : "s"} failed; issue list may be stale or incomplete.`,
     );
   }
   const coverageNote =
@@ -663,7 +709,7 @@ function refreshWindow(windowDays: number): Promise<Snapshot> {
   const running = inflight.get(windowDays);
   if (running) return running;
   const started = Date.now();
-  const promise = fetchSnapshot(windowDays)
+  const promise = fetchSnapshot(windowDays, snapshots.get(windowDays)?.snapshot)
     .then((snapshot) => {
       snapshots.set(windowDays, { snapshot, at: Date.now() });
       console.log(
@@ -718,6 +764,12 @@ export async function resolveViewerScope({
     console.error("PR Radar GitHub inbox refresh failed", error);
     return errorOutput(error);
   }
+}
+
+/** Test seam: waits for running refreshes to finish, keeping the cache. */
+export async function settleViewerScopeRefreshes(): Promise<void> {
+  await Promise.allSettled([...inflight.values()]);
+  await stateQueue;
 }
 
 /** Test seam: waits for running refreshes so tests do not bleed into each other. */
