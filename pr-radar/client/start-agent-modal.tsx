@@ -3,13 +3,13 @@ import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { decideRoutedLabels } from "../shared/routed-labels";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
 import {
   type AgentLaunchOverrides,
   automaticRoutingLaunchState,
-  buildAgentLabels,
   initialLaunchTarget,
   type RadarRow,
   type RoutingLaunchState,
@@ -84,13 +84,22 @@ export function StartAgentModal({
   const [routedOptions, setRoutedOptions] = useState<Record<string, unknown> | undefined>(
     undefined,
   );
-  const [routedLabels, setRoutedLabels] = useState<Record<string, string> | undefined>(undefined);
+  const [routedLabels, setRoutedLabels] = useState<unknown>(undefined);
   const [routeReason, setRouteReason] = useState<string | null>(null);
-  // The labels the launch will actually carry from the routing script (after buildAgentLabels filtering).
-  const routedLabelText = Object.entries(buildAgentLabels("", { labels: routedLabels }))
-    .filter(([key]) => key !== "pr-radar.cwd")
-    .map(([key, value]) => `${key}=${value}`)
-    .join(", ");
+  // What the launch will do with the routing script's labels: apply them, skip them under a
+  // fallback rule, or refuse to start.
+  const labelDecision = decideRoutedLabels({
+    labels: routedLabels,
+    repository: row?.repository ?? "",
+    policy: settings,
+    now: Date.now(),
+  });
+  const routedLabelText =
+    labelDecision.status === "ok"
+      ? Object.entries(labelDecision.labels)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(", ")
+      : "";
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routingBusy, setRoutingBusy] = useState(false);
   const activeRowIdRef = useRef<string | null>(null);
@@ -566,6 +575,14 @@ export function StartAgentModal({
             {routedLabelText ? (
               <Text style={styles.hint}>{`Labels from routing script: ${routedLabelText}`}</Text>
             ) : null}
+            {labelDecision.status === "blocked" ? (
+              <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
+                {labelDecision.message}
+              </Text>
+            ) : null}
+            {labelDecision.status === "fallback" ? (
+              <Text style={styles.hint}>{labelDecision.warning}</Text>
+            ) : null}
             {routeError ? (
               <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{routeError}</Text>
             ) : null}
@@ -674,7 +691,7 @@ export function StartAgentModal({
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
             <Pressable
-              disabled={pending || routingBusy}
+              disabled={pending || routingBusy || labelDecision.status === "blocked"}
               onPress={() =>
                 onStart({
                   row,
@@ -690,7 +707,7 @@ export function StartAgentModal({
                     modeId,
                     contextMode,
                     ...(routedOptions ? { options: routedOptions } : {}),
-                    ...(routedLabels ? { labels: routedLabels } : {}),
+                    ...(routedLabels === undefined ? {} : { labels: routedLabels }),
                   },
                 })
               }

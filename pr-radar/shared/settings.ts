@@ -7,6 +7,29 @@ export type CwdMode = (typeof CWD_MODES)[number];
 export const AUTO_LAUNCH_MODES = ["prompt", "existing_only", "existing_or_clone"] as const;
 export type AutoLaunchMode = (typeof AUTO_LAUNCH_MODES)[number];
 
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+
+// A short-term rule that lets a launch go ahead without the routing script's labels when the
+// script returns invalid ones. `repository` is `owner/name` or `*`; `until` is an ISO-8601
+// timestamp with an offset. Only rules that expire within the next week are honored (see
+// `routed-labels.ts`).
+export const LabelFallbackRuleSchema = z
+  .object({
+    repository: z
+      .string()
+      .trim()
+      .max(256)
+      .regex(/^(\*|[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)$/, "Use owner/name or *."),
+    until: z
+      .string()
+      .regex(ISO_TIMESTAMP, "Use an ISO-8601 timestamp with a time zone, e.g. 2026-11-25T18:00Z.")
+      .refine((value) => Number.isFinite(Date.parse(value)), "Not a real date."),
+    note: z.string().trim().max(256).optional(),
+  })
+  .strict();
+
+export type LabelFallbackRule = z.infer<typeof LabelFallbackRuleSchema>;
+
 export const DEFAULT_PR_RADAR_SETTINGS = {
   sourceCodeDir: "~/src",
   defaultCwdMode: "CWD-WORKTREE",
@@ -18,6 +41,8 @@ export const DEFAULT_PR_RADAR_SETTINGS = {
   defaultModeId: "",
   defaultContextMode: "",
   routingScriptPath: "",
+  routingLabelPrefixes: "",
+  routingLabelFallbacks: [] as LabelFallbackRule[],
 } as const;
 
 export const PrRadarSettingsSchema = z
@@ -55,6 +80,19 @@ export const PrRadarSettingsSchema = z
       .trim()
       .max(4_096)
       .default(DEFAULT_PR_RADAR_SETTINGS.routingScriptPath),
+    // Label key prefixes the routing script may use as-is, separated by commas or spaces (for
+    // example `ade.`). Every other script label is stored as `pr-radar.route.<key>`. Never admits
+    // `pr-radar`, `pr-radar.*`, `paseo` or `paseo.*`.
+    routingLabelPrefixes: z
+      .string()
+      .trim()
+      .max(1_024)
+      .default(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes),
+    // Temporary rules that let a launch proceed without script labels when they are invalid.
+    routingLabelFallbacks: z
+      .array(LabelFallbackRuleSchema)
+      .max(32)
+      .default(() => [...DEFAULT_PR_RADAR_SETTINGS.routingLabelFallbacks]),
   })
   .strict();
 

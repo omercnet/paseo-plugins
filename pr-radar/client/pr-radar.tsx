@@ -23,30 +23,25 @@ import {
   runRoutingScript,
 } from "../shared/viewer-scope";
 import { HighlightedText } from "./highlighted-text";
+import { applyAutoRouting, defaultLaunchOverrides, launchNewAgent } from "./launch";
 import {
   type AgentLaunchOverrides,
   agentActionFor,
   autoLaunchRequiresModal,
   BUCKET_TITLES,
   BUCKETS,
-  buildAgentConfig,
-  buildAgentLabels,
   buildAgentPrompt,
   checkSummary,
   formatAge,
   hasActiveAgent,
-  labelWorkspaceCwd,
   matchesRow,
   openPullRequestUrl,
   profileAgentConfig,
   type RadarBucket,
   type RadarRow,
-  restrictRoutedLaunch,
-  routedProviderModel,
   type SortKey,
   sortRows,
   splitDraftRows,
-  vetRoutedProfile,
 } from "./radar";
 import {
   DIRECTORY_PARTIAL,
@@ -246,50 +241,14 @@ export function PrRadar({
 
   const startNewAgentMutation = useMutation({
     mutationFn: async (request: StartAgentLaunchRequest) => {
-      const { row } = request;
-      if (!row.number) {
-        throw new Error("An issue or pull request number is required to start a new agent.");
-      }
-      const prepared = await prepareCwd({
-        repository: row.repository,
-        prNumber: row.number,
-        itemKind: row.itemKind ?? "pr",
-        headRefName: row.headRefName,
-        baseRefName: row.baseRefName,
-        targetDir: request.targetDir,
-        allowClone: request.allowClone ?? false,
-        cwdMode: request.cwdMode,
-        worktreeName: request.worktreeName,
-      });
-
-      const targetWorkspace = await paseo.workspaces.open(prepared.cwd);
-      await labelWorkspaceCwd(targetWorkspace, prepared.cwdTag);
-
-      const { config } = await paseo.config.get();
-      const profiles = config.agentProfiles ?? [];
-      const wantedProfile = request.profileName.trim().toLowerCase();
-      const profile =
-        (wantedProfile
-          ? profiles.find((candidate) => candidate.name.toLowerCase() === wantedProfile)
-          : undefined) ??
-        profiles.find((candidate) => candidate.name.toLowerCase() === "model router") ??
-        profiles[0];
-
-      const agentConfig = buildAgentConfig(profile, request.overrides);
-      const prompt = buildAgentPrompt(row);
-      const created = await targetWorkspace.agents.create({
-        config: agentConfig,
-        title: `PR Radar: ${row.repository}#${row.number}`,
-        prompt,
-        labels: buildAgentLabels(prepared.cwdTag, request.overrides),
-      });
-
+      const launched = await launchNewAgent(
+        { paseo, prepareCwd, policy: settings, now: Date.now },
+        request,
+      );
       if (navigation) {
-        navigation.openAgent({ agentId: created.id, serverId: host.id });
+        navigation.openAgent({ agentId: launched.agentId, serverId: host.id });
       }
-      const baseMsg = `Started new agent in ${prepared.cwdTag} (${prepared.cwd}) for ${row.repository}#${row.number}.`;
-      const warnings = [request.routingWarning, prepared.warning].filter(Boolean);
-      return warnings.length > 0 ? `${warnings.join(" ")} ${baseMsg}` : baseMsg;
+      return launched.message;
     },
     onMutate: (request) => {
       setOpenError(null);
@@ -323,13 +282,7 @@ export function PrRadar({
 
       autoLaunchingRef.current = true;
       try {
-        let overrides: AgentLaunchOverrides = {
-          provider: settings.defaultProvider,
-          model: settings.defaultModel,
-          thinkingOptionId: settings.defaultEffort,
-          modeId: settings.defaultModeId,
-          contextMode: settings.defaultContextMode,
-        };
+        let overrides: AgentLaunchOverrides = defaultLaunchOverrides(settings);
         let profileName = settings.defaultProfile;
         let routingWarning: string | undefined;
 
@@ -376,27 +329,18 @@ export function PrRadar({
                 },
               },
             });
-            const vetted = routed.profile
-              ? vetRoutedProfile(
-                  (await paseo.config.get()).config.agentProfiles ?? [],
-                  routed.profile,
-                )
-              : { ignored: [] as string[] };
-            if (vetted.profileName) profileName = vetted.profileName;
-            overrides = { ...overrides, ...routedProviderModel(overrides, routed) };
-            if (routed.thinkingOptionId) {
-              overrides = { ...overrides, thinkingOptionId: routed.thinkingOptionId };
+            const profiles = routed.profile
+              ? ((await paseo.config.get()).config.agentProfiles ?? [])
+              : [];
+            const applied = applyAutoRouting({ settings, routed, profiles, row, now: Date.now() });
+            if (applied.status === "blocked") {
+              setActionNotice(applied.message);
+              return;
             }
-            const restricted = restrictRoutedLaunch(routed);
-            restricted.ignored.push(...vetted.ignored);
-            if (restricted.modeId) overrides = { ...overrides, modeId: restricted.modeId };
-            if (routed.contextMode) overrides = { ...overrides, contextMode: routed.contextMode };
-            if (restricted.options) overrides = { ...overrides, options: restricted.options };
-            if (routed.labels) overrides = { ...overrides, labels: routed.labels };
-            if (restricted.ignored.length > 0) {
-              routingWarning = `Routing script values ignored (${restricted.ignored.join(", ")}).`;
-              setActionNotice(routingWarning);
-            }
+            profileName = applied.profileName;
+            overrides = applied.overrides;
+            routingWarning = applied.routingWarning;
+            if (routingWarning) setActionNotice(routingWarning);
           } catch (routerError) {
             const reason =
               routerError instanceof Error ? routerError.message : "Routing script failed.";

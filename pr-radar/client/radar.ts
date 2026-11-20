@@ -744,7 +744,7 @@ export function checkSummary(row: RadarRow): string {
   return passed === 1 ? "1 check passed" : `${passed} checks passed`;
 }
 
-type AgentProfileLike = {
+export type AgentProfileLike = {
   provider: string;
   model?: string;
   modeId?: string;
@@ -837,7 +837,7 @@ export function autoLaunchRequiresModal(
 
 const CWD_TAGS: readonly CwdTag[] = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"];
 
-interface LabelableWorkspace {
+export interface LabelableWorkspace {
   // Workspaces before Paseo 0.16.0-beta.1 have no setLabel.
   setLabel?(label: string, options: { assigned: boolean }): unknown;
 }
@@ -912,49 +912,17 @@ export interface AgentLaunchOverrides {
   thinkingOptionId?: string;
   contextMode?: string;
   options?: Record<string, unknown>;
-  labels?: Record<string, string>;
+  // Raw routing-script output; `decideRoutedLabels` validates it at launch.
+  labels?: unknown;
 }
 
-const MAX_LABELS = 16;
-const MAX_LABEL_LEN = 128;
-const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
-function hasControlChars(value: string): boolean {
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return true;
-  }
-  return false;
-}
-// Labels that tools around Paseo read as control-plane markers (lead ownership for permission
-// approval, handoff and window placement). PR text reaches the routing script's stdin, so a script
-// that copies it into a label must not be able to set these.
-const RESERVED_LABEL_KEYS = new Set([
-  "ade.lead",
-  "ade.handoff",
-  "ade.placement",
-  "ade.via",
-  "slice",
-]);
-
-// Labels for a launched agent: the routing script's extra labels plus PR Radar's own `pr-radar.cwd`.
-// The `pr-radar.` prefix and a few control-plane keys are reserved (the script cannot set them), keys match
-// LABEL_KEY, values are trimmed non-empty strings without control characters, all of bounded length, and at most MAX_LABELS survive, so a script cannot flood the agent.
+// Labels for a launched agent: the labels already accepted by `decideRoutedLabels` plus PR Radar's
+// own `pr-radar.cwd`, which a script can never set (the `pr-radar` keys are reserved).
 export function buildAgentLabels(
   cwdTag: string,
-  overrides: AgentLaunchOverrides = {},
+  accepted: Record<string, string> = {},
 ): Record<string, string> {
-  const extra: Record<string, string> = {};
-  for (const [rawKey, rawValue] of Object.entries(overrides.labels ?? {})) {
-    if (Object.keys(extra).length >= MAX_LABELS) break;
-    if (typeof rawValue !== "string") continue;
-    const key = rawKey.trim();
-    const value = rawValue.trim();
-    if (!value || value.length > MAX_LABEL_LEN || hasControlChars(value)) continue;
-    if (!LABEL_KEY.test(key) || key.toLowerCase().startsWith("pr-radar.")) continue;
-    if (RESERVED_LABEL_KEYS.has(key.toLowerCase())) continue;
-    extra[key] = value;
-  }
-  return { ...extra, "pr-radar.cwd": cwdTag };
+  return { ...accepted, "pr-radar.cwd": cwdTag };
 }
 
 export function buildAgentConfig(

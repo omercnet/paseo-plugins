@@ -8,6 +8,7 @@ import {
   Loading,
   SettingsAction,
   SettingsCard,
+  SettingsInput,
   SettingsSection,
   SettingsSelect,
   useToast,
@@ -15,6 +16,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
+import { describeFallbackStatus, parseFallbackRuleInput } from "../shared/routed-labels";
 import {
   type AutoLaunchMode,
   type CwdMode,
@@ -66,6 +68,9 @@ function ReadyPrRadarSettings({
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
   const [error, setError] = useState<string | null>(null);
+  const [ruleText, setRuleText] = useState("");
+  const [ruleError, setRuleError] = useState<string | null>(null);
+  const [ruleInputKey, setRuleInputKey] = useState(0);
 
   const { profileOptions, providerOptions, modelOptions, modeOptions, contextModeOptions } =
     useAgentLaunchOptions();
@@ -143,6 +148,22 @@ function ReadyPrRadarSettings({
     });
     saveChainRef.current = run.catch(() => false);
     return run;
+  }
+
+  async function handleAddRule() {
+    const parsedRule = parseFallbackRuleInput(ruleText, Date.now());
+    if ("error" in parsedRule) {
+      setRuleError(parsedRule.error);
+      return;
+    }
+    setRuleError(null);
+    const saved = await savePatch({
+      routingLabelFallbacks: [...settings.values.routingLabelFallbacks, parsedRule.rule],
+    });
+    if (saved) {
+      setRuleText("");
+      setRuleInputKey((key) => key + 1);
+    }
   }
 
   async function handleReset() {
@@ -267,6 +288,42 @@ function ReadyPrRadarSettings({
             options={routingScriptOptions}
             theme={theme}
             onSelect={(next) => void savePatch({ routingScriptPath: next })}
+          />
+          <SettingsInput
+            label="Allowed label prefixes"
+            hint="Routing script labels that start with one of these (comma or space separated, e.g. ade.) keep their name. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
+            initialValue={settings.values.routingLabelPrefixes}
+            placeholder="None: all script labels go under pr-radar.route."
+            onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
+          />
+          {settings.values.routingLabelFallbacks.map((rule, index) => (
+            <SettingsAction
+              key={`${rule.repository}-${rule.until}`}
+              label={`Label fallback: ${rule.repository}`}
+              hint={`${describeFallbackStatus(rule, Date.now())}${rule.note ? ` - ${rule.note}` : ""}`}
+              actionLabel="Remove"
+              onPress={() =>
+                void savePatch({
+                  routingLabelFallbacks: settings.values.routingLabelFallbacks.filter(
+                    (_, ruleIndex) => ruleIndex !== index,
+                  ),
+                })
+              }
+            />
+          ))}
+          <SettingsInput
+            key={ruleInputKey}
+            label="Add temporary label fallback"
+            hint="owner/name (or *), an ISO-8601 end time within 7 days, then an optional note, e.g. acme/api 2026-11-25T18:00Z fixing the script. While a rule is active, invalid routing script labels are skipped with a warning instead of blocking the launch."
+            error={ruleError}
+            initialValue=""
+            placeholder="owner/name 2026-11-25T18:00Z note"
+            onChangeText={setRuleText}
+          />
+          <SettingsAction
+            label="Add fallback rule"
+            actionLabel="Add rule"
+            onPress={() => void handleAddRule()}
           />
           <SettingsAction
             label="Reset settings"
