@@ -310,11 +310,35 @@ describe("settings save queue", () => {
     const adder = fallbackRuleAdder(ruleA);
     const added = host.save(adder.patch);
     const write = await host.nextWrite();
-    // Another client saves the same rule first; the refused write is retried on that document.
-    host.otherClientSaves({ ...empty, routingLabelFallbacks: [ruleA] });
+    // Another client saves the same rule, with a note of its own, first; the refused write is
+    // retried on that document, so the add is now a duplicate and keeps the listed note.
+    const theirs = { ...ruleA, note: "theirs" };
+    host.otherClientSaves({ ...empty, routingLabelFallbacks: [theirs] });
     write.reply();
     expect(await host.finishAll(added)).toEqual([true]);
     expect(adder.wasDuplicate()).toBe(true);
+    expect(host.stored().routingLabelFallbacks).toEqual([theirs]);
+  });
+
+  test("a rule already listed exactly as entered counts as saved: a double press is not an error", async () => {
+    const host = fakeHost(empty);
+    const first = fallbackRuleAdder(ruleA);
+    const second = fallbackRuleAdder({ ...ruleA });
+    const firstSave = host.save(first.patch);
+    const write = await host.nextWrite();
+    const secondSave = host.save(second.patch);
+    write.reply();
+    expect(await host.finishAll(firstSave, secondSave)).toEqual([true, true]);
+    expect([first.wasDuplicate(), second.wasDuplicate()]).toEqual([false, false]);
+    expect(host.stored().routingLabelFallbacks).toEqual([ruleA]);
+  });
+
+  test("a retry after a lost reply finds this very add already saved and does not call it a duplicate", async () => {
+    const host = fakeHost(empty);
+    host.loseNextReply();
+    const adder = fallbackRuleAdder(ruleA);
+    expect(await host.finishAll(host.save(adder.patch))).toEqual([true]);
+    expect(adder.wasDuplicate()).toBe(false);
     expect(host.stored().routingLabelFallbacks).toEqual([ruleA]);
   });
 

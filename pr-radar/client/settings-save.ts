@@ -34,7 +34,9 @@ const RETRY_MAX_WAIT_MS = 1000;
 // keep the wait polling past its deadline and hold up every later save. Falls back to the wall
 // clock only where `performance` does not exist.
 function monotonicNow(): number {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
 }
 
 interface QueuedPatch<Values> {
@@ -162,13 +164,18 @@ export function addFallbackRule<Rule extends RuleIdentity>(
 // answered by the list the patch last ran on inside the save queue, which holds every edit queued
 // before it, so a rule whose removal is still pending is not "already there" and a rule whose
 // add is still pending is. (A check against the rendered settings would see neither.)
+//
+// `wasDuplicate` is true only when the list holds an equivalent rule that is not this one as
+// written (it differs in its note, which the add would drop). A rule that is already listed
+// exactly as entered counts as saved: that is what a double press of Add, or a retry after a lost
+// reply (the host saved this very add), finds.
 export function fallbackRuleAdder<Rule extends RuleIdentity>(rule: Rule) {
   let duplicate = false;
   return {
     patch(latest: { routingLabelFallbacks: readonly Rule[] }) {
-      const next = addFallbackRule(latest.routingLabelFallbacks, rule);
-      duplicate = next.length === latest.routingLabelFallbacks.length;
-      return { routingLabelFallbacks: next };
+      const listed = latest.routingLabelFallbacks.find((existing) => sameTarget(existing, rule));
+      duplicate = listed !== undefined && !sameText(listed, rule);
+      return { routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, rule) };
     },
     wasDuplicate: () => duplicate,
   };
