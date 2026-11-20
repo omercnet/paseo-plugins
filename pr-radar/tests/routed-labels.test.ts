@@ -3,6 +3,7 @@ import {
   activeFallbackRule,
   checkRoutedLabels,
   decideRoutedLabels,
+  describeLabel,
   displayLabelKey,
   MAX_LABEL_KEY_LEN,
   MAX_SCRIPT_LABELS,
@@ -191,6 +192,14 @@ describe("checkRoutedLabels: unsafe text and shape", () => {
     expect(displayLabelKey("a‮b\u0007")).toBe("a\\u{202E}b\\u{7}");
     expect(displayLabelKey("a\\b")).toBe("a\\\\b");
     expect(displayLabelKey("x".repeat(100))).toBe(`${"x".repeat(64)}...`);
+  });
+
+  test("describeLabel quotes a key and a value alike and writes a backslash once as two", () => {
+    expect(describeLabel("kind", "review")).toBe('"kind"="review"');
+    // A value of C:\x (one backslash) is shown with two, not four.
+    expect(describeLabel("path", "C:\\x")).toBe('"path"="C:\\\\x"');
+    expect(describeLabel("k", 'say "hi"')).toBe('"k"="say \\"hi\\""');
+    expect(describeLabel("k", "a‮b")).toBe('"k"="a\\u{202E}b"');
   });
 });
 

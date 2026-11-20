@@ -1,3 +1,5 @@
+import { fallbackRuleTarget } from "../shared/routed-labels";
+
 /**
  * A change to a settings document: a partial value, or a function of the newest document that
  * returns one. A list edit (add or remove a rule) must be a function, because the list it builds
@@ -108,16 +110,24 @@ interface RuleIdentity {
   note?: string | undefined;
 }
 
-function sameRule(a: RuleIdentity, b: RuleIdentity): boolean {
-  return a.repository === b.repository && a.until === b.until && (a.note ?? "") === (b.note ?? "");
+// Two rules with the same repository (any case) and end instant do the same thing, however they
+// are written; the first one listed is the one that applies, so a second would only use a slot.
+function sameTarget(a: RuleIdentity, b: RuleIdentity): boolean {
+  return fallbackRuleTarget(a) === fallbackRuleTarget(b);
 }
 
-// Appends a rule to the newest list; an identical rule already there is kept once.
+// The note is part of what the user sees, so removing a rule matches it too.
+function sameRule(a: RuleIdentity, b: RuleIdentity): boolean {
+  return sameTarget(a, b) && (a.note ?? "") === (b.note ?? "");
+}
+
+// Appends a rule to the newest list. A rule that does the same as one already there (its note
+// aside) is not added again: the rule already in the list stays as it is.
 export function addFallbackRule<Rule extends RuleIdentity>(
   rules: readonly Rule[],
   rule: Rule,
 ): Rule[] {
-  return rules.some((existing) => sameRule(existing, rule)) ? [...rules] : [...rules, rule];
+  return rules.some((existing) => sameTarget(existing, rule)) ? [...rules] : [...rules, rule];
 }
 
 // Removes a rule from the newest list by what it says, not by its position: the position the

@@ -13,20 +13,56 @@ const ruleA: LabelFallbackRule = { repository: "acme/a", until: "2026-11-25T18:0
 const ruleB: LabelFallbackRule = { repository: "acme/b", until: "2026-11-26T18:00:00Z" };
 const ruleC: LabelFallbackRule = { repository: "acme/c", until: "2026-11-27T18:00:00Z", note: "c" };
 
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+// A test waits on a promise instead of a clock. This bound only turns a hang (a gate that never
+// opens) into a failure that names what was awaited; it never decides how events interleave.
+const GATE_LIMIT_MS = 2000;
 
-// A host that behaves like Paseo's settings store: the revision changes with every accepted
-// write and a write against an older revision is refused. The screen sees the new document and
-// revision on a later task than the write's reply (a render that lags), and a saved document is
-// remembered with the old revision until then. Writes finish only when the test says so.
+function bounded<T>(gate: Promise<T>, awaited: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out waiting for ${awaited}`)), GATE_LIMIT_MS);
+  });
+  return Promise.race([gate, limit]).finally(() => clearTimeout(timer));
+}
+
+// A queue of events a test takes one at a time; `take` resolves when the next one arrives.
+function eventQueue<T>() {
+  const items: T[] = [];
+  const takers: Array<(item: T) => void> = [];
+  return {
+    push(item: T) {
+      const taker = takers.shift();
+      if (taker) taker(item);
+      else items.push(item);
+    },
+    take(): Promise<T> {
+      const item = items.shift();
+      return item === undefined
+        ? new Promise<T>((resolve) => takers.push(resolve))
+        : Promise.resolve(item);
+    },
+  };
+}
+
+type HostEvent =
+  | { kind: "write"; reply(): void }
+  | { kind: "wait"; release(): void }
+  | { kind: "settled" };
+
+// A host that behaves like Paseo's settings store: the revision changes with every accepted write
+// and a write against an older revision is refused. The screen sees the new document and revision
+// only when the test renders, after the write's reply (a render that lags), and a saved document
+// is remembered with the old revision until then. A write waits for the test to reply, and the
+// queue's wait for a newer revision waits for the test to release it.
 function fakeHost(initial: Doc) {
   let stored = { values: initial, revision: 1 };
   let rendered = { values: initial, revision: "1" };
   const attempts: Array<{ values: Doc; revision: string; accepted: boolean }> = [];
-  const pending: Array<() => void> = [];
   const reports: Array<string | null> = [];
+  const events = eventQueue<HostEvent>();
   let refuseAll = false;
-  const renderStored = () => {
+
+  const render = () => {
     rendered = { values: stored.values, revision: String(stored.revision) };
   };
   const save = createSettingsSaveQueue<Doc>({
@@ -40,45 +76,52 @@ function fakeHost(initial: Doc) {
         : { success: true, data: values },
     write: (values, revision) =>
       new Promise<boolean>((resolve) => {
-        pending.push(() => {
-          const accepted = !refuseAll && revision === String(stored.revision);
-          attempts.push({ values, revision, accepted });
-          if (accepted) {
-            stored = { values, revision: stored.revision + 1 };
-            setTimeout(renderStored, 0);
-          }
-          resolve(accepted);
+        events.push({
+          kind: "write",
+          reply() {
+            const accepted = !refuseAll && revision === String(stored.revision);
+            attempts.push({ values, revision, accepted });
+            if (accepted) stored = { values, revision: stored.revision + 1 };
+            resolve(accepted);
+          },
         });
       }),
     report: (message) => reports.push(message),
-    wait: () => new Promise((done) => setTimeout(done, 1)),
+    wait: () => new Promise<void>((release) => events.push({ kind: "wait", release })),
   });
+
   return {
     save,
     attempts,
     reports,
     stored: () => stored.values,
-    refuseAllWrites: () => {
+    refuseAllWrites() {
       refuseAll = true;
     },
-    // Another client saves; this screen sees it a little later.
+    // Another client saves; this screen sees it when it next renders.
     otherClientSaves(values: Doc) {
       stored = { values, revision: stored.revision + 1 };
-      setTimeout(renderStored, 5);
     },
-    // Lets the queue start its write for what has been queued so far.
-    tick,
-    // Finishes in-flight writes, one task apart, until every given save has settled.
+    // Resolves when the queue has a write in flight, so a test can queue a second edit during it.
+    async nextWrite() {
+      const event = await bounded(events.take(), "a write to start");
+      if (event.kind !== "write") throw new Error(`expected a write, got ${event.kind}`);
+      return event;
+    },
+    // Answers every write and renders whenever the queue waits for a newer revision, until the
+    // given saves have all settled.
     async finishAll(...saves: Array<Promise<boolean>>) {
-      let settled = false;
-      void Promise.all(saves).then(() => {
-        settled = true;
-      });
-      for (let turn = 0; !settled && turn < 500; turn++) {
-        await tick();
-        pending.shift()?.();
+      const results = Promise.all(saves);
+      void results.then(() => events.push({ kind: "settled" }));
+      for (;;) {
+        const event = await bounded(events.take(), "the queue to write, wait or finish");
+        if (event.kind === "settled") return results;
+        if (event.kind === "write") event.reply();
+        else {
+          render();
+          event.release();
+        }
       }
-      return Promise.all(saves);
     },
   };
 }
@@ -96,9 +139,10 @@ describe("settings save queue", () => {
   test("two rapid rule additions during an in-flight save both survive", async () => {
     const host = fakeHost(empty);
     const first = host.save(add(ruleA));
-    await host.tick();
-    // The second add happens while the first write is still in flight and nothing has re-rendered.
+    const firstWrite = await host.nextWrite();
+    // The second add happens while the first write is in flight and nothing has re-rendered.
     const second = host.save(add(ruleB));
+    firstWrite.reply();
     expect(await host.finishAll(first, second)).toEqual([true, true]);
     expect(host.stored().routingLabelFallbacks).toEqual([ruleA, ruleB]);
   });
@@ -106,8 +150,9 @@ describe("settings save queue", () => {
   test("a second write that starts on the revision the first just replaced is retried, not refused", async () => {
     const host = fakeHost(empty);
     const first = host.save(add(ruleA));
-    await host.tick();
+    const firstWrite = await host.nextWrite();
     const second = host.save(add(ruleB));
+    firstWrite.reply();
     expect(await host.finishAll(first, second)).toEqual([true, true]);
     // The host refused the stale-revision write once; the retry used the newer revision.
     expect(host.attempts.map((attempt) => attempt.accepted)).toEqual([true, false, true]);
@@ -117,8 +162,9 @@ describe("settings save queue", () => {
   test("an add and a remove made during an in-flight save both apply, in order", async () => {
     const host = fakeHost({ ...empty, routingLabelFallbacks: [ruleA] });
     const added = host.save(add(ruleB));
-    await host.tick();
+    const write = await host.nextWrite();
     const removed = host.save(remove(ruleA));
+    write.reply();
     expect(await host.finishAll(added, removed)).toEqual([true, true]);
     // The removed rule does not come back, and the added rule is not lost.
     expect(host.stored().routingLabelFallbacks).toEqual([ruleB]);
@@ -128,8 +174,9 @@ describe("settings save queue", () => {
     const host = fakeHost({ ...empty, routingLabelFallbacks: [ruleA, ruleB, ruleC] });
     // Remove A, then (before any render) remove C, which was at position 2 on the old list.
     const removeFirst = host.save(remove(ruleA));
-    await host.tick();
+    const write = await host.nextWrite();
     const removeLast = host.save(remove(ruleC));
+    write.reply();
     await host.finishAll(removeFirst, removeLast);
     expect(host.stored().routingLabelFallbacks).toEqual([ruleB]);
   });
@@ -137,8 +184,9 @@ describe("settings save queue", () => {
   test("a field edit queued behind a list edit keeps the list edit", async () => {
     const host = fakeHost(empty);
     const added = host.save(add(ruleA));
-    await host.tick();
+    const write = await host.nextWrite();
     const prefix = host.save({ routingLabelPrefixes: "ade.kind" });
+    write.reply();
     await host.finishAll(added, prefix);
     expect(host.stored()).toMatchObject({
       routingLabelFallbacks: [ruleA],
@@ -149,20 +197,21 @@ describe("settings save queue", () => {
   test("a change another client saved in the meantime is kept when a refused write is retried", async () => {
     const host = fakeHost(empty);
     const mine = host.save(add(ruleA));
-    await host.tick();
+    const write = await host.nextWrite();
     // The other client saves rule B before this screen's write reaches the host.
     host.otherClientSaves({ ...empty, routingLabelFallbacks: [ruleB] });
+    write.reply();
     expect(await host.finishAll(mine)).toEqual([true]);
     expect(host.stored().routingLabelFallbacks).toEqual([ruleB, ruleA]);
   });
 
   test("patches queued together are written once, in order", async () => {
     const host = fakeHost(empty);
+    // The first call has not started a write yet when the second is queued, so one write holds both.
     const results = [
       host.save({ routingLabelPrefixes: "a.b" }),
       host.save((latest) => ({ routingLabelPrefixes: `${latest.routingLabelPrefixes} c.d` })),
     ];
-    // The first call has not started a write yet when the second is queued, so one write holds both.
     expect(await host.finishAll(...results)).toEqual([true, true]);
     expect(host.attempts).toHaveLength(1);
     expect(host.stored().routingLabelPrefixes).toBe("a.b c.d");
@@ -184,14 +233,18 @@ describe("settings save queue", () => {
     const host = fakeHost(empty);
     host.refuseAllWrites();
     const first = host.save({ routingLabelPrefixes: "a.b" });
-    await host.tick();
+    const write = await host.nextWrite();
     const second = host.save({ routingLabelPrefixes: "c.d" });
+    write.reply();
     expect(await host.finishAll(first, second)).toEqual([false, false]);
   });
 
   test("an invalid result reports the first problem and writes nothing", async () => {
     const host = fakeHost(empty);
-    const saved = await host.save({ routingLabelPrefixes: "x".repeat(1025) });
+    const saved = await bounded(
+      host.save({ routingLabelPrefixes: "x".repeat(1025) }),
+      "the invalid save to settle",
+    );
     expect(saved).toBe(false);
     expect(host.attempts).toHaveLength(0);
     expect(host.reports.at(-1)).toBe("too long");
@@ -206,9 +259,54 @@ describe("fallback rule list helpers", () => {
     expect(rules).toEqual([ruleA]);
   });
 
+  test("add treats a repository that differs only in case as the same rule", () => {
+    expect(addFallbackRule([ruleA], { ...ruleA, repository: "ACME/A" })).toEqual([ruleA]);
+    expect(addFallbackRule([{ ...ruleA, repository: "Acme/A" }], ruleA)).toEqual([
+      { ...ruleA, repository: "Acme/A" },
+    ]);
+  });
+
+  test("add treats the same end instant written another way as the same rule", () => {
+    // 18:00Z is 19:00 at +01:00, and a fraction of zero changes nothing.
+    expect(addFallbackRule([ruleA], { ...ruleA, until: "2026-11-25T19:00:00+01:00" })).toEqual([
+      ruleA,
+    ]);
+    expect(addFallbackRule([ruleA], { ...ruleA, until: "2026-11-25T18:00:00.000Z" })).toEqual([
+      ruleA,
+    ]);
+  });
+
+  test("add keeps rules that differ in repository or in end instant", () => {
+    expect(addFallbackRule([ruleA], { ...ruleA, repository: "acme/other" })).toHaveLength(2);
+    expect(addFallbackRule([ruleA], { ...ruleA, until: "2026-11-25T18:00:01Z" })).toHaveLength(2);
+    expect(addFallbackRule([ruleA], { ...ruleA, repository: "*" })).toHaveLength(2);
+  });
+
+  test("add keeps the rule already listed when only the note differs", () => {
+    const listed = { ...ruleA, note: "first" };
+    expect(addFallbackRule([listed], { ...ruleA, note: "second" })).toEqual([listed]);
+  });
+
+  test("a timestamp that does not parse matches only itself", () => {
+    const odd = { ...ruleA, until: "not a date" };
+    expect(addFallbackRule([odd], { ...odd })).toEqual([odd]);
+    expect(addFallbackRule([odd], { ...odd, until: "also not a date" })).toHaveLength(2);
+  });
+
   test("remove drops one matching rule and ignores a rule that is already gone", () => {
     expect(removeFallbackRule([ruleA, ruleB], ruleA)).toEqual([ruleB]);
     expect(removeFallbackRule([ruleB], ruleA)).toEqual([ruleB]);
     expect(removeFallbackRule([ruleA, { ...ruleA }], ruleA)).toEqual([ruleA]);
+  });
+
+  test("remove finds a rule written another way, and the one with the same note", () => {
+    const listed = [
+      { ...ruleA, note: "one" },
+      { ...ruleA, repository: "ACME/A", note: "two" },
+    ];
+    expect(removeFallbackRule(listed, { ...ruleA, note: "two" })).toEqual([listed[0]]);
+    expect(
+      removeFallbackRule(listed, { ...ruleA, until: "2026-11-25T19:00:00+01:00", note: "one" }),
+    ).toEqual([listed[1]]);
   });
 });
