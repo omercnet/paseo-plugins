@@ -339,6 +339,8 @@ export async function waitForRoutingScriptIdleForTests(): Promise<void> {
 // Resolves with `work`, or rejects with `message` once `ms` have passed. The work itself cannot be
 // cancelled, but the caller stops waiting for it, so a hung filesystem read cannot hold a turn.
 async function withinBudget<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  // Work abandoned below may still reject later; nobody is left to hear it.
+  work.catch(() => {});
   if (ms <= 0) throw new Error(message);
   let timer: NodeJS.Timeout | undefined;
   const expired = new Promise<never>((_, reject) => {
