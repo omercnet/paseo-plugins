@@ -5,7 +5,7 @@ import {
   usePaseo,
   useSettings,
 } from "@getpaseo/plugin/client";
-import { useToast } from "@getpaseo/plugin/client/react-native";
+import { useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
