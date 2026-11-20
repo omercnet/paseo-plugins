@@ -706,27 +706,67 @@ async function assertNoIgnoredFileOverwrite(
   }
 }
 
-/**
- * Runs git and returns its stdout as UTF-8, failing closed when the output is not valid UTF-8.
- * `runGit` decodes lossily, which would mangle a non-UTF-8 filename and let a comparison miss it.
- */
-async function runGitLossless(
+const NUL_BYTE = 0x00;
+const TAB_BYTE = 0x09;
+const SPACE_BYTE = 0x20;
+const GITLINK_ENTRY_PREFIX = Buffer.from("160000 ");
+
+/** Runs git and returns its stdout undecoded, so a caller can inspect names that are not UTF-8. */
+async function runGitBytes(
   cwd: string,
   args: string[],
   timeout = COMMAND_TIMEOUT_MS,
-): Promise<string> {
+): Promise<Buffer> {
   const { stdout } = await execFileAsync("git", [...GIT_SAFETY_ARGS, "-C", cwd, ...args], {
     timeout,
     maxBuffer: MAX_BUFFER_BYTES,
     env: gitEnv(),
     encoding: "buffer",
   });
-  const raw = stdout as Buffer;
-  const decoded = raw.toString("utf8");
-  if (!Buffer.from(decoded, "utf8").equals(raw)) {
-    throw new Error(`Git output in ${cwd} contains invalid UTF-8; refusing to proceed.`);
+  return stdout as Buffer;
+}
+
+/** Splits `-z` output on NUL into its non-empty records, byte for byte. */
+function nulSeparatedEntries(raw: Buffer): Buffer[] {
+  const entries: Buffer[] = [];
+  let start = 0;
+  for (let end = raw.indexOf(NUL_BYTE); end !== -1; end = raw.indexOf(NUL_BYTE, start)) {
+    if (end > start) entries.push(raw.subarray(start, end));
+    start = end + 1;
   }
-  return decoded;
+  if (start < raw.length) entries.push(raw.subarray(start));
+  return entries;
+}
+
+function hasPrefix(bytes: Buffer, prefix: Buffer): boolean {
+  return bytes.subarray(0, prefix.length).equals(prefix);
+}
+
+/** The path of an `ls-files -s -z` or `ls-tree -z` record: everything after its first tab. */
+function entryPathBytes(entry: Buffer): Buffer {
+  return entry.subarray(entry.indexOf(TAB_BYTE) + 1);
+}
+
+/**
+ * The paths of the submodule (mode 160000) entries in `ls-files -s -z` output. Only these paths are
+ * decoded, and strictly: a lossy decode would mangle a non-UTF-8 submodule path and let the
+ * comparison against the incoming tree miss it, so that one case fails closed. Every other tracked
+ * name, whatever its bytes, is skipped undecoded.
+ */
+function submodulePaths(dir: string, lsFilesOutput: Buffer): string[] {
+  const paths: string[] = [];
+  for (const entry of nulSeparatedEntries(lsFilesOutput)) {
+    if (!hasPrefix(entry, GITLINK_ENTRY_PREFIX)) continue;
+    const pathBytes = entryPathBytes(entry);
+    const path = pathBytes.toString("utf8");
+    if (!Buffer.from(path, "utf8").equals(pathBytes)) {
+      throw new Error(
+        `A submodule path in ${dir} is not valid UTF-8, so it cannot be checked against the incoming tree; refusing to proceed.`,
+      );
+    }
+    paths.push(path);
+  }
+  return paths;
 }
 
 /**
@@ -739,30 +779,25 @@ async function assertNoGitlinkToFileOverwrite(
   target: string,
   prNumber: number,
 ): Promise<void> {
-  const gitlinks = (await runGitLossless(dir, ["ls-files", "-s", "-z"]))
-    .split("\0")
-    .filter((entry) => entry.startsWith("160000 "));
-  if (gitlinks.length === 0) return;
-  const gitlinkPaths = gitlinks
-    .map((entry) => entry.slice(entry.indexOf("\t") + 1))
-    .filter(Boolean);
+  const gitlinkPaths = submodulePaths(dir, await runGitBytes(dir, ["ls-files", "-s", "-z"]));
   if (gitlinkPaths.length === 0) return;
 
   // Returns the mode of the exact entry at `path` in the target tree (or null when absent). A leaf
   // produces exactly the entry at `path`; a directory produces only its children (`path/…`).
+  // Compared as bytes, so a sibling with a non-UTF-8 name can neither match nor break it.
   const targetEntryMode = async (path: string): Promise<string | null> => {
-    const entries = (
-      await runGitLossless(dir, ["ls-tree", "-z", target, "--", `:(literal)${path}`])
-    )
-      .split("\0")
-      .filter(Boolean);
+    const wanted = Buffer.from(path, "utf8");
+    const childPrefix = Buffer.from(`${path}/`, "utf8");
+    const entries = nulSeparatedEntries(
+      await runGitBytes(dir, ["ls-tree", "-z", target, "--", `:(literal)${path}`]),
+    );
+    let hasChildren = false;
     for (const entry of entries) {
-      if (entry.slice(entry.indexOf("\t") + 1) === path) return entry.slice(0, entry.indexOf(" "));
+      const entryPath = entryPathBytes(entry);
+      if (entryPath.equals(wanted)) return entry.subarray(0, entry.indexOf(SPACE_BYTE)).toString();
+      if (hasPrefix(entryPath, childPrefix)) hasChildren = true;
     }
-    if (entries.some((entry) => entry.slice(entry.indexOf("\t") + 1).startsWith(`${path}/`))) {
-      return "040000";
-    }
-    return null;
+    return hasChildren ? "040000" : null;
   };
 
   // A gitlink that becomes anything but another gitlink (file, symlink, directory, or removed)

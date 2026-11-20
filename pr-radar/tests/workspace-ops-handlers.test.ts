@@ -68,7 +68,7 @@ function makeRoot(): string {
   return root;
 }
 
-function gitIn(dir: string, args: string[]): string {
+function gitIn(dir: string, args: string[], input?: Buffer): string {
   const env = { ...process.env };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
@@ -76,9 +76,23 @@ function gitIn(dir: string, args: string[]): string {
   delete env.GIT_INDEX_FILE;
   delete env.GIT_OBJECT_DIRECTORY;
   delete env.GIT_ALTERNATE_OBJECT_DIRECTORIES;
-  return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe", env })
+  return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe", env, input })
     .toString()
     .trim();
+}
+
+/**
+ * Stages an entry whose path is raw bytes (a non-UTF-8 name the filesystem may not even allow) and
+ * marks it skip-worktree, so `git status` does not report the file that was never written as deleted.
+ */
+function trackRawName(dir: string, mode: string, sha: string, rawName: Buffer): void {
+  const record = Buffer.concat([Buffer.from(`${mode} ${sha}\t`), rawName]);
+  gitIn(dir, ["update-index", "--add", "--index-info"], Buffer.concat([record, Buffer.from("\n")]));
+  gitIn(
+    dir,
+    ["update-index", "--skip-worktree", "-z", "--stdin"],
+    Buffer.concat([rawName, Buffer.from([0])]),
+  );
 }
 
 function initRepo(dir: string, remoteUrl: string | null): void {
@@ -821,6 +835,43 @@ describe("git hardening", () => {
 
     await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
       /replaces the submodule under nested/,
+    );
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
+  });
+
+  test("checks out a PR in a repository that tracks a non-UTF-8 name", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const blob = gitIn(repoDir, ["hash-object", "-w", "--stdin"], Buffer.from("data\n"));
+    trackRawName(repoDir, "100644", blob, Buffer.from([0x64, 0x69, 0x72, 0x2f, 0xff, 0x2e, 0x74]));
+    gitIn(repoDir, ["commit", "-m", "track a non-UTF-8 name"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+  });
+
+  test("checks out a PR that keeps a submodule next to a non-UTF-8 name", async () => {
+    const root = makeRoot();
+    const { repoDir, bareDir } = makePullableRepo(root);
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["update-index", "--add", "--cacheinfo", `160000,${gitlinkSha},submod`]);
+    gitIn(repoDir, ["commit", "-m", "add gitlink"]);
+    const prHead = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    gitIn(repoDir, ["push", bareDir, `+${prHead}:refs/pull/7/head`]);
+    const blob = gitIn(repoDir, ["hash-object", "-w", "--stdin"], Buffer.from("data\n"));
+    trackRawName(repoDir, "100644", blob, Buffer.from([0xff, 0x2e, 0x74]));
+    gitIn(repoDir, ["commit", "-m", "track a non-UTF-8 name"]);
+    await prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }));
+    expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("pr-radar/pr-7");
+  });
+
+  test("fails closed when a submodule path is not valid UTF-8", async () => {
+    const root = makeRoot();
+    const { repoDir } = makePullableRepo(root);
+    const gitlinkSha = gitIn(repoDir, ["rev-parse", "HEAD"]);
+    trackRawName(repoDir, "160000", gitlinkSha, Buffer.from([0x73, 0x75, 0x62, 0xff]));
+    gitIn(repoDir, ["commit", "-m", "add a submodule with a raw name"]);
+    await expect(prepare(request({ targetDir: repoDir, cwdMode: "CWD-BASE" }))).rejects.toThrow(
+      /submodule path .* is not valid UTF-8/,
     );
     expect(gitIn(repoDir, ["branch", "--show-current"])).toBe("main");
   });
