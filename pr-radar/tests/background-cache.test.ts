@@ -15,6 +15,8 @@ const { gh, home } = vi.hoisted(() => ({
     issues: "[]",
     /** Per-search answers keyed by flag (e.g. `--owner=testuser`); override `issues`. */
     issuesByFlag: {} as Record<string, string>,
+    /** What `gh api user` answers. */
+    viewer: "testuser",
     /** Resolves pending gh calls when set; lets a test hold a refresh open. */
     gate: null as Promise<void> | null,
   },
@@ -42,7 +44,7 @@ vi.mock("node:child_process", () => ({
         return callback(new Error("gh: search rate limited"));
       const stdout =
         args[0] === "api" && args[1] === "user"
-          ? "testuser\n"
+          ? `${gh.viewer}\n`
           : isIssueSearch
             ? (Object.entries(gh.issuesByFlag).find(([flag]) => args.includes(flag))?.[1] ??
               gh.issues)
@@ -59,16 +61,17 @@ home.dir = mkdtempSync(join(tmpdir(), "pr-radar-cache-"));
 const {
   acknowledgeViewerUpdates,
   resolveViewerScope,
+  settleViewerScopeRefreshes,
   MAX_STALE_MS,
   resetViewerScopeCache,
   startBackgroundRefresh,
   STALE_AFTER_MS,
 } = await import("../server/viewer-scope");
 
-const issueRecord = (number: number) => ({
+const issueRecord = (number: number, title = `Issue ${number}`) => ({
   id: `issue-${number}`,
   number,
-  title: `Issue ${number}`,
+  title,
   url: `https://github.com/a/b/issues/${number}`,
   createdAt: "2026-11-01T00:00:00Z",
   updatedAt: "2026-11-02T00:00:00Z",
@@ -77,12 +80,19 @@ const issueRecord = (number: number) => ({
   commentsCount: 0,
   labels: [],
 });
-/** Ages the cached window past MAX_STALE_MS, so the next read waits for a fresh sweep. */
-async function refreshAgain() {
+/**
+ * Moves the clock `ms` forward and refreshes the cached window the way a client read does: a read
+ * past STALE_AFTER_MS answers from memory and refreshes in the background, one past MAX_STALE_MS
+ * waits for the refresh. Either way this returns the answer a read after the refresh sees.
+ */
+async function refreshAfter(ms: number) {
   if (!vi.isFakeTimers()) vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(Date.now() + MAX_STALE_MS + 1_000);
+  vi.setSystemTime(Date.now() + ms);
+  await resolveViewerScope({ urls: [], windowDays: 30 });
+  await settleViewerScopeRefreshes();
   return resolveViewerScope({ urls: [], windowDays: 30 });
 }
+const refreshAgain = () => refreshAfter(STALE_AFTER_MS + 1_000);
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const loginCalls = () => gh.calls.filter((args) => args[0] === "api" && args[1] === "user").length;
 
@@ -93,6 +103,7 @@ describe("background cache", () => {
     gh.failIssueFlag = null;
     gh.issues = "[]";
     gh.issuesByFlag = {};
+    gh.viewer = "testuser";
     gh.gate = null;
     vi.useRealTimers();
     // Paseo sets PASEO_HOME for agents; keep the state file in the temp home either way.
@@ -326,6 +337,42 @@ describe("background cache", () => {
       expect(answer.coverageNote).not.toMatch(WARNING);
     });
 
+    test("kept issues expire after MAX_STALE_MS of failures; the warning stays", async () => {
+      gh.issues = JSON.stringify([issueRecord(1)]);
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+      gh.failIssues = true;
+      // Each round is one stale-read refresh (61 s) after the last; the carry chain must not
+      // outlive the last successful search by more than MAX_STALE_MS (360 s).
+      for (let round = 1; round <= 5; round += 1) {
+        const answer = await refreshAgain();
+        expect(issueNumbers(answer)).toEqual([1]);
+      }
+      const expired = await refreshAgain();
+      expect(expired.issueItems).toEqual([]);
+      expect(expired.coverageNote).toMatch(WARNING);
+    });
+
+    test("issues from a window left idle past MAX_STALE_MS are not revived by a failed search", async () => {
+      gh.issues = JSON.stringify([issueRecord(1)]);
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+      gh.failIssues = true;
+      const answer = await refreshAfter(MAX_STALE_MS + 1_000);
+      expect(answer.error).toBeNull();
+      expect(answer.issueItems).toEqual([]);
+      expect(answer.coverageNote).toMatch(WARNING);
+    });
+
+    test("issues are not carried to a different viewer", async () => {
+      gh.issues = JSON.stringify([issueRecord(1)]);
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+      gh.viewer = "someone-else";
+      gh.failIssues = true;
+      const answer = await refreshAgain();
+      expect(answer.viewer).toBe("someone-else");
+      expect(answer.issueItems).toEqual([]);
+      expect(answer.coverageNote).toMatch(WARNING);
+    });
+
     test("one failed search keeps only the issues its role found", async () => {
       // The mock answers every filter alike, so every issue lands in the highest-priority role.
       gh.issues = JSON.stringify([issueRecord(1), issueRecord(2)]);
@@ -359,6 +406,19 @@ describe("background cache", () => {
       const answer = await refreshAgain();
       expect(issueNumbers(answer)).toEqual([1]);
       expect(answer.coverageNote).toMatch(/^1 GitHub issue search request failed/);
+    });
+
+    test("fresh data wins over a kept copy of the same issue", async () => {
+      gh.issuesByFlag = { "--owner=testuser": JSON.stringify([issueRecord(3, "old title")]) };
+      await resolveViewerScope({ urls: [], windowDays: 30 });
+
+      // The owner search fails, but the assignee search now returns issue 3 with a new title.
+      gh.failIssueFlag = "--owner=testuser";
+      gh.issuesByFlag = { "--assignee=testuser": JSON.stringify([issueRecord(3, "new title")]) };
+      const answer = await refreshAgain();
+      expect(answer.issueItems?.map(({ title, role }) => `${title}:${role}`)).toEqual([
+        "new title:assignee",
+      ]);
     });
   });
 });
