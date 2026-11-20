@@ -295,7 +295,7 @@ function ReadyPrRadarSettings({
           />
           {settings.values.routingLabelFallbacks.map((rule) => (
             <SettingsAction
-              key={`${rule.repository}-${rule.until}`}
+              key={`${rule.repository}-${rule.until}-${rule.note ?? ""}`}
               label={`Label fallback: ${rule.repository}`}
               hint={`${describeFallbackStatus(rule, Date.now())}${rule.note ? ` - ${rule.note}` : ""}`}
               actionLabel="Remove"

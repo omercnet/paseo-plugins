@@ -15,86 +15,111 @@ const ruleC: LabelFallbackRule = { repository: "acme/c", until: "2026-11-27T18:0
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-// A host whose writes finish only when the test says so, and whose latest document is the one
-// the screen last rendered: it changes only when a save is remembered, like a render that lags a
-// write.
+// A host that behaves like Paseo's settings store: the revision changes with every accepted
+// write and a write against an older revision is refused. The screen sees the new document and
+// revision on a later task than the write's reply (a render that lags), and a saved document is
+// remembered with the old revision until then. Writes finish only when the test says so.
 function fakeHost(initial: Doc) {
-  let rendered = initial;
-  let stored = initial;
-  const writes: Doc[] = [];
+  let stored = { values: initial, revision: 1 };
+  let rendered = { values: initial, revision: "1" };
+  const attempts: Array<{ values: Doc; revision: string; accepted: boolean }> = [];
   const pending: Array<() => void> = [];
   const reports: Array<string | null> = [];
-  let accept = true;
+  let refuseAll = false;
+  const renderStored = () => {
+    rendered = { values: stored.values, revision: String(stored.revision) };
+  };
   const save = createSettingsSaveQueue<Doc>({
-    latest: () => ({ values: rendered, revision: "r1" }),
+    latest: () => rendered,
     remember: (values) => {
-      rendered = values;
+      rendered = { values, revision: rendered.revision };
     },
     parse: (values): SettingsParse<Doc> =>
       values.routingLabelPrefixes.length > 1024
         ? { success: false, message: "too long" }
         : { success: true, data: values },
-    write: (values) =>
+    write: (values, revision) =>
       new Promise<boolean>((resolve) => {
-        writes.push(values);
         pending.push(() => {
-          if (accept) stored = values;
-          resolve(accept);
+          const accepted = !refuseAll && revision === String(stored.revision);
+          attempts.push({ values, revision, accepted });
+          if (accepted) {
+            stored = { values, revision: stored.revision + 1 };
+            setTimeout(renderStored, 0);
+          }
+          resolve(accepted);
         });
       }),
     report: (message) => reports.push(message),
+    wait: () => new Promise((done) => setTimeout(done, 1)),
   });
   return {
     save,
-    writes,
+    attempts,
     reports,
-    stored: () => stored,
-    rejectWrites: () => {
-      accept = false;
+    stored: () => stored.values,
+    refuseAllWrites: () => {
+      refuseAll = true;
     },
-    // Lets the oldest in-flight write finish, then lets the queue start the next one.
-    async finishOne() {
-      await tick();
-      pending.shift()?.();
-      await tick();
+    // Another client saves; this screen sees it a little later.
+    otherClientSaves(values: Doc) {
+      stored = { values, revision: stored.revision + 1 };
+      setTimeout(renderStored, 5);
     },
-    // Lets the queue start the write for what has been queued so far.
+    // Lets the queue start its write for what has been queued so far.
     tick,
+    // Finishes in-flight writes, one task apart, until every given save has settled.
+    async finishAll(...saves: Array<Promise<boolean>>) {
+      let settled = false;
+      void Promise.all(saves).then(() => {
+        settled = true;
+      });
+      for (let turn = 0; !settled && turn < 500; turn++) {
+        await tick();
+        pending.shift()?.();
+      }
+      return Promise.all(saves);
+    },
   };
 }
 
 const empty: Doc = { ...DEFAULT_PR_RADAR_SETTINGS, routingLabelFallbacks: [] };
 
+const add = (rule: LabelFallbackRule) => (latest: Doc) => ({
+  routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, rule),
+});
+const remove = (rule: LabelFallbackRule) => (latest: Doc) => ({
+  routingLabelFallbacks: removeFallbackRule(latest.routingLabelFallbacks, rule),
+});
+
 describe("settings save queue", () => {
   test("two rapid rule additions during an in-flight save both survive", async () => {
     const host = fakeHost(empty);
-    const first = host.save((latest) => ({
-      routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, ruleA),
-    }));
+    const first = host.save(add(ruleA));
     await host.tick();
     // The second add happens while the first write is still in flight and nothing has re-rendered.
-    const second = host.save((latest) => ({
-      routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, ruleB),
-    }));
-    await host.finishOne();
-    await host.finishOne();
-    expect(await first).toBe(true);
-    expect(await second).toBe(true);
+    const second = host.save(add(ruleB));
+    expect(await host.finishAll(first, second)).toEqual([true, true]);
     expect(host.stored().routingLabelFallbacks).toEqual([ruleA, ruleB]);
+  });
+
+  test("a second write that starts on the revision the first just replaced is retried, not refused", async () => {
+    const host = fakeHost(empty);
+    const first = host.save(add(ruleA));
+    await host.tick();
+    const second = host.save(add(ruleB));
+    expect(await host.finishAll(first, second)).toEqual([true, true]);
+    // The host refused the stale-revision write once; the retry used the newer revision.
+    expect(host.attempts.map((attempt) => attempt.accepted)).toEqual([true, false, true]);
+    expect(host.reports).not.toContain("Settings changed concurrently; please retry.");
   });
 
   test("an add and a remove made during an in-flight save both apply, in order", async () => {
     const host = fakeHost({ ...empty, routingLabelFallbacks: [ruleA] });
-    const added = host.save((latest) => ({
-      routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, ruleB),
-    }));
+    const added = host.save(add(ruleB));
     await host.tick();
-    const removed = host.save((latest) => ({
-      routingLabelFallbacks: removeFallbackRule(latest.routingLabelFallbacks, ruleA),
-    }));
-    await host.finishOne();
-    await host.finishOne();
-    expect([await added, await removed]).toEqual([true, true]);
+    const removed = host.save(remove(ruleA));
+    expect(await host.finishAll(added, removed)).toEqual([true, true]);
     // The removed rule does not come back, and the added rule is not lost.
     expect(host.stored().routingLabelFallbacks).toEqual([ruleB]);
   });
@@ -102,33 +127,33 @@ describe("settings save queue", () => {
   test("a rule is removed by what it says, not by the position pressed on an older list", async () => {
     const host = fakeHost({ ...empty, routingLabelFallbacks: [ruleA, ruleB, ruleC] });
     // Remove A, then (before any render) remove C, which was at position 2 on the old list.
-    const removeA = host.save((latest) => ({
-      routingLabelFallbacks: removeFallbackRule(latest.routingLabelFallbacks, ruleA),
-    }));
+    const removeFirst = host.save(remove(ruleA));
     await host.tick();
-    const removeC = host.save((latest) => ({
-      routingLabelFallbacks: removeFallbackRule(latest.routingLabelFallbacks, ruleC),
-    }));
-    await host.finishOne();
-    await host.finishOne();
-    await Promise.all([removeA, removeC]);
+    const removeLast = host.save(remove(ruleC));
+    await host.finishAll(removeFirst, removeLast);
     expect(host.stored().routingLabelFallbacks).toEqual([ruleB]);
   });
 
   test("a field edit queued behind a list edit keeps the list edit", async () => {
     const host = fakeHost(empty);
-    const add = host.save((latest) => ({
-      routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, ruleA),
-    }));
+    const added = host.save(add(ruleA));
     await host.tick();
     const prefix = host.save({ routingLabelPrefixes: "ade.kind" });
-    await host.finishOne();
-    await host.finishOne();
-    await Promise.all([add, prefix]);
+    await host.finishAll(added, prefix);
     expect(host.stored()).toMatchObject({
       routingLabelFallbacks: [ruleA],
       routingLabelPrefixes: "ade.kind",
     });
+  });
+
+  test("a change another client saved in the meantime is kept when a refused write is retried", async () => {
+    const host = fakeHost(empty);
+    const mine = host.save(add(ruleA));
+    await host.tick();
+    // The other client saves rule B before this screen's write reaches the host.
+    host.otherClientSaves({ ...empty, routingLabelFallbacks: [ruleB] });
+    expect(await host.finishAll(mine)).toEqual([true]);
+    expect(host.stored().routingLabelFallbacks).toEqual([ruleB, ruleA]);
   });
 
   test("patches queued together are written once, in order", async () => {
@@ -138,30 +163,37 @@ describe("settings save queue", () => {
       host.save((latest) => ({ routingLabelPrefixes: `${latest.routingLabelPrefixes} c.d` })),
     ];
     // The first call has not started a write yet when the second is queued, so one write holds both.
-    await host.finishOne();
-    expect(await Promise.all(results)).toEqual([true, true]);
-    expect(host.writes).toHaveLength(1);
+    expect(await host.finishAll(...results)).toEqual([true, true]);
+    expect(host.attempts).toHaveLength(1);
     expect(host.stored().routingLabelPrefixes).toBe("a.b c.d");
+  });
+
+  test("a write the host keeps refusing is retried once, then reported", async () => {
+    const host = fakeHost(empty);
+    const ok = host.save({ routingLabelPrefixes: "ade.kind" });
+    expect(await host.finishAll(ok)).toEqual([true]);
+
+    host.refuseAllWrites();
+    const refused = host.save({ routingLabelPrefixes: "x.y" });
+    expect(await host.finishAll(refused)).toEqual([false]);
+    expect(host.attempts.filter((attempt) => !attempt.accepted)).toHaveLength(2);
+    expect(host.reports.at(-1)).toBe("Settings changed concurrently; please retry.");
   });
 
   test("each caller hears whether the write holding its own patch worked", async () => {
     const host = fakeHost(empty);
-    const ok = host.save({ routingLabelPrefixes: "ade.kind" });
-    await host.finishOne();
-    expect(await ok).toBe(true);
-
-    host.rejectWrites();
-    const conflicted = host.save({ routingLabelPrefixes: "x.y" });
-    await host.finishOne();
-    expect(await conflicted).toBe(false);
-    expect(host.reports.at(-1)).toBe("Settings changed concurrently; please retry.");
+    host.refuseAllWrites();
+    const first = host.save({ routingLabelPrefixes: "a.b" });
+    await host.tick();
+    const second = host.save({ routingLabelPrefixes: "c.d" });
+    expect(await host.finishAll(first, second)).toEqual([false, false]);
   });
 
   test("an invalid result reports the first problem and writes nothing", async () => {
     const host = fakeHost(empty);
     const saved = await host.save({ routingLabelPrefixes: "x".repeat(1025) });
     expect(saved).toBe(false);
-    expect(host.writes).toHaveLength(0);
+    expect(host.attempts).toHaveLength(0);
     expect(host.reports.at(-1)).toBe("too long");
   });
 });

@@ -19,7 +19,12 @@ export interface SettingsSaveQueueDeps<Values> {
   write(values: Values, revision: string): Promise<boolean>;
   /** Called with null when a write starts and with a message when it fails. */
   report(message: string | null): void;
+  /** Sleeps; replaceable so a test controls the clock. Defaults to setTimeout. */
+  wait?(ms: number): Promise<void>;
 }
+
+const RETRY_POLL_MS = 20;
+const RETRY_MAX_WAIT_MS = 1000;
 
 interface QueuedPatch<Values> {
   patch: SettingsPatch<Values>;
@@ -29,8 +34,9 @@ interface QueuedPatch<Values> {
 /**
  * Saves settings one write at a time. Patches queued while a write is in flight are applied in
  * order to the newest document when their write starts, so two quick edits both survive and a
- * function patch never sees a stale list. Each caller learns whether the write holding its own
- * patch succeeded.
+ * function patch never sees a stale list. A write the host refuses is retried once on the newest
+ * document and revision, so function patches must be pure. Each caller learns whether the write
+ * holding its own patch succeeded.
  */
 export function createSettingsSaveQueue<Values extends object>(
   deps: SettingsSaveQueueDeps<Values>,
@@ -51,25 +57,42 @@ export function createSettingsSaveQueue<Values extends object>(
     for (const entry of batch) entry.settle(saved);
   }
 
+  // After a write the host reports the new revision on a later render, so the next write in the
+  // queue may start against the revision the previous write already replaced and be refused as
+  // a concurrent change. Wait (bounded) for a newer revision; the caller then rebuilds the batch.
+  async function newerThan(revision: string): Promise<{ values: Values; revision: string }> {
+    const wait = deps.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+    for (let waited = 0; waited < RETRY_MAX_WAIT_MS; waited += RETRY_POLL_MS) {
+      const newest = deps.latest();
+      if (newest.revision !== revision) return newest;
+      await wait(RETRY_POLL_MS);
+    }
+    return deps.latest();
+  }
+
   async function writeBatch(batch: QueuedPatch<Values>[]): Promise<boolean> {
     deps.report(null);
-    const { values, revision } = deps.latest();
-    let next = values;
-    for (const { patch } of batch) {
-      next = { ...next, ...(typeof patch === "function" ? patch(next) : patch) };
+    let base = deps.latest();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let next = base.values;
+      for (const { patch } of batch) {
+        next = { ...next, ...(typeof patch === "function" ? patch(next) : patch) };
+      }
+      const parsed = deps.parse(next);
+      if (!parsed.success) {
+        deps.report(parsed.message);
+        return false;
+      }
+      const written = await deps.write(parsed.data, base.revision);
+      if (written !== false) {
+        deps.remember(parsed.data);
+        return true;
+      }
+      // Refused: retry once on the newest document, so function patches are applied again to it.
+      if (attempt === 0) base = await newerThan(base.revision);
     }
-    const parsed = deps.parse(next);
-    if (!parsed.success) {
-      deps.report(parsed.message);
-      return false;
-    }
-    const written = await deps.write(parsed.data, revision);
-    if (written === false) {
-      deps.report("Settings changed concurrently; please retry.");
-      return false;
-    }
-    deps.remember(parsed.data);
-    return true;
+    deps.report("Settings changed concurrently; please retry.");
+    return false;
   }
 
   return (patch) =>
