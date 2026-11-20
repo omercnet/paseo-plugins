@@ -23,6 +23,8 @@ export interface SettingsSaveQueueDeps<Values> {
   report(message: string | null): void;
   /** Sleeps; replaceable so a test controls the clock. Defaults to setTimeout. */
   wait?(ms: number): Promise<void>;
+  /** The time in milliseconds that bounds the wait; replaceable like `wait`. Defaults to Date.now. */
+  now?(): number;
 }
 
 const RETRY_POLL_MS = 20;
@@ -36,9 +38,12 @@ interface QueuedPatch<Values> {
 /**
  * Saves settings one write at a time. Patches queued while a write is in flight are applied in
  * order to the newest document when their write starts, so two quick edits both survive and a
- * function patch never sees a stale list. A write the host refuses is retried once on the newest
- * document and revision, so function patches must be pure. Each caller learns whether the write
- * holding its own patch succeeded.
+ * function patch never sees a stale list. A write the host refuses is retried once when a newer
+ * document has arrived, with every patch applied again to that document. A function patch must
+ * therefore be pure and idempotent: a retry can run on a document that already holds its effect
+ * (the host may have saved the write and lost the reply). A plain patch replaces its own fields,
+ * so after a retry it wins over another client's edit of the same field. Each caller learns whether
+ * the write holding its own patch succeeded.
  */
 export function createSettingsSaveQueue<Values extends object>(
   deps: SettingsSaveQueueDeps<Values>,
@@ -61,15 +66,19 @@ export function createSettingsSaveQueue<Values extends object>(
 
   // After a write the host reports the new revision on a later render, so the next write in the
   // queue may start against the revision the previous write already replaced and be refused as
-  // a concurrent change. Wait (bounded) for a newer revision; the caller then rebuilds the batch.
-  async function newerThan(revision: string): Promise<{ values: Values; revision: string }> {
+  // a concurrent change. Wait for a newer revision until a clock deadline (not a count of waits,
+  // so a throttled background tab ends after one late timer); the caller then rebuilds the batch
+  // on it. Resolves null when none arrives.
+  async function newerThan(revision: string): Promise<{ values: Values; revision: string } | null> {
     const wait = deps.wait ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
-    for (let waited = 0; waited < RETRY_MAX_WAIT_MS; waited += RETRY_POLL_MS) {
+    const now = deps.now ?? Date.now;
+    const deadline = now() + RETRY_MAX_WAIT_MS;
+    for (;;) {
       const newest = deps.latest();
       if (newest.revision !== revision) return newest;
+      if (now() >= deadline) return null;
       await wait(RETRY_POLL_MS);
     }
-    return deps.latest();
   }
 
   async function writeBatch(batch: QueuedPatch<Values>[]): Promise<boolean> {
@@ -90,10 +99,18 @@ export function createSettingsSaveQueue<Values extends object>(
         deps.remember(parsed.data);
         return true;
       }
-      // Refused: retry once on the newest document, so function patches are applied again to it.
-      if (attempt === 0) base = await newerThan(base.revision);
+      // Refused. The host says no more than "false" for a stale revision, a document it rejects
+      // and a lost connection alike, so retry only when a newer document has actually arrived
+      // (the stale-revision case); otherwise a retry would just repeat the refusal.
+      if (attempt === 0) {
+        const newest = await newerThan(base.revision);
+        if (!newest) break;
+        base = newest;
+      }
     }
-    deps.report("Settings changed concurrently; please retry.");
+    deps.report(
+      "Settings were not saved: they changed in the meantime or the host refused the write. Please retry.",
+    );
     return false;
   }
 
@@ -116,6 +133,10 @@ function sameTarget(a: RuleIdentity, b: RuleIdentity): boolean {
   return fallbackRuleTarget(a) === fallbackRuleTarget(b);
 }
 
+function sameText(a: RuleIdentity, b: RuleIdentity): boolean {
+  return a.repository === b.repository && a.until === b.until && (a.note ?? "") === (b.note ?? "");
+}
+
 // The note is part of what the user sees, so removing a rule matches it too.
 function sameRule(a: RuleIdentity, b: RuleIdentity): boolean {
   return sameTarget(a, b) && (a.note ?? "") === (b.note ?? "");
@@ -131,11 +152,14 @@ export function addFallbackRule<Rule extends RuleIdentity>(
 }
 
 // Removes a rule from the newest list by what it says, not by its position: the position the
-// user pressed may belong to an older list.
+// user pressed may belong to an older list. The row pressed (exactly as written) goes first; a
+// rule that only reads the same (case, end written another way) is the fallback, so a list that
+// already holds equivalent rows loses the one that was pressed.
 export function removeFallbackRule<Rule extends RuleIdentity>(
   rules: readonly Rule[],
   rule: RuleIdentity,
 ): Rule[] {
-  const at = rules.findIndex((existing) => sameRule(existing, rule));
+  const exact = rules.findIndex((existing) => sameText(existing, rule));
+  const at = exact >= 0 ? exact : rules.findIndex((existing) => sameRule(existing, rule));
   return at < 0 ? [...rules] : rules.filter((_, index) => index !== at);
 }

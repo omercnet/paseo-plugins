@@ -61,6 +61,9 @@ function fakeHost(initial: Doc) {
   const reports: Array<string | null> = [];
   const events = eventQueue<HostEvent>();
   let refuseAll = false;
+  let loseReply = false;
+  let clock = 0;
+  let waits = 0;
 
   const render = () => {
     rendered = { values: stored.values, revision: String(stored.revision) };
@@ -82,22 +85,37 @@ function fakeHost(initial: Doc) {
             const accepted = !refuseAll && revision === String(stored.revision);
             attempts.push({ values, revision, accepted });
             if (accepted) stored = { values, revision: stored.revision + 1 };
-            resolve(accepted);
+            // A lost reply: the host saved the document but the client is told false.
+            const replyLost = accepted && loseReply;
+            if (replyLost) loseReply = false;
+            resolve(accepted && !replyLost);
           },
         });
       }),
     report: (message) => reports.push(message),
-    wait: () => new Promise<void>((release) => events.push({ kind: "wait", release })),
+    // The queue's bound on its wait counts this clock, which moves only when the queue waits.
+    now: () => clock,
+    wait: (ms) => {
+      clock += ms;
+      waits += 1;
+      return new Promise<void>((release) => events.push({ kind: "wait", release }));
+    },
   });
 
   return {
     save,
     attempts,
     reports,
+    waits: () => waits,
     stored: () => stored.values,
     refuseAllWrites() {
       refuseAll = true;
     },
+    loseNextReply() {
+      loseReply = true;
+    },
+    // The screen renders what the host has now (a render that was waiting catches up).
+    render,
     // Another client saves; this screen sees it when it next renders.
     otherClientSaves(values: Doc) {
       stored = { values, revision: stored.revision + 1 };
@@ -156,7 +174,7 @@ describe("settings save queue", () => {
     expect(await host.finishAll(first, second)).toEqual([true, true]);
     // The host refused the stale-revision write once; the retry used the newer revision.
     expect(host.attempts.map((attempt) => attempt.accepted)).toEqual([true, false, true]);
-    expect(host.reports).not.toContain("Settings changed concurrently; please retry.");
+    expect(host.reports.filter((report) => report !== null)).toEqual([]);
   });
 
   test("an add and a remove made during an in-flight save both apply, in order", async () => {
@@ -217,16 +235,30 @@ describe("settings save queue", () => {
     expect(host.stored().routingLabelPrefixes).toBe("a.b c.d");
   });
 
-  test("a write the host keeps refusing is retried once, then reported", async () => {
+  test("a refused write with no newer revision is not retried: it waits out the bound, then reports", async () => {
     const host = fakeHost(empty);
     const ok = host.save({ routingLabelPrefixes: "ade.kind" });
     expect(await host.finishAll(ok)).toEqual([true]);
+    host.render();
+    const waitsBefore = host.waits();
 
     host.refuseAllWrites();
     const refused = host.save({ routingLabelPrefixes: "x.y" });
     expect(await host.finishAll(refused)).toEqual([false]);
-    expect(host.attempts.filter((attempt) => !attempt.accepted)).toHaveLength(2);
-    expect(host.reports.at(-1)).toBe("Settings changed concurrently; please retry.");
+    // One refusal, no repeat of it, and a wait of exactly the bound (1000 ms in 20 ms steps).
+    expect(host.attempts.filter((attempt) => !attempt.accepted)).toHaveLength(1);
+    expect(host.waits() - waitsBefore).toBe(50);
+    expect(host.reports.at(-1)).toMatch(/^Settings were not saved: /);
+  });
+
+  test("a write the host saved but whose reply was lost is retried without doubling a list edit", async () => {
+    const host = fakeHost(empty);
+    host.loseNextReply();
+    const added = host.save(add(ruleA));
+    // The host saves the rule and the reply says false; the host's new document then arrives, and
+    // the retry applies the same edit to a document that already holds it.
+    expect(await host.finishAll(added)).toEqual([true]);
+    expect(host.stored().routingLabelFallbacks).toEqual([ruleA]);
   });
 
   test("each caller hears whether the write holding its own patch worked", async () => {
@@ -297,6 +329,16 @@ describe("fallback rule list helpers", () => {
     expect(removeFallbackRule([ruleA, ruleB], ruleA)).toEqual([ruleB]);
     expect(removeFallbackRule([ruleB], ruleA)).toEqual([ruleB]);
     expect(removeFallbackRule([ruleA, { ...ruleA }], ruleA)).toEqual([ruleA]);
+  });
+
+  test("remove takes the row that was pressed when the list holds equivalent rows", () => {
+    // An old list can hold both spellings of the same rule; pressing the second removes the second.
+    const first = { ...ruleA, repository: "Acme/A", note: "x" };
+    const second = { ...ruleA, until: "2026-11-25T19:00:00+01:00", note: "x" };
+    expect(removeFallbackRule([first, second], second)).toEqual([first]);
+    expect(removeFallbackRule([first, second], first)).toEqual([second]);
+    // A row pressed as written elsewhere in the list still goes before an equivalent earlier one.
+    expect(removeFallbackRule([second, first], first)).toEqual([second]);
   });
 
   test("remove finds a rule written another way, and the one with the same note", () => {

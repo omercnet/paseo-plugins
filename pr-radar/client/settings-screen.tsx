@@ -153,6 +153,13 @@ function ReadyPrRadarSettings({
       setRuleError(parsedRule.error);
       return;
     }
+    const listed = latestSettingsRef.current.values.routingLabelFallbacks;
+    if (addFallbackRule(listed, parsedRule.rule).length === listed.length) {
+      setRuleError(
+        "A rule for this repository and end time already exists. Remove it first to change its note.",
+      );
+      return;
+    }
     setRuleError(null);
     const saved = await savePatch((latest) => ({
       routingLabelFallbacks: addFallbackRule(latest.routingLabelFallbacks, parsedRule.rule),
