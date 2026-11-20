@@ -267,11 +267,37 @@ function startScriptCapped(
   return { result, finished: finishedGate.promise };
 }
 
-let routingScriptRunning = false;
-let routingScriptFinished: Promise<void> | null = null;
+// One script runs at a time; up to this many further calls wait their turn, the rest are refused.
+const MAX_QUEUED_ROUTING_CALLS = 2;
+const ROUTING_BUSY_MESSAGE = "A routing script is already running; try again when it has finished.";
+
+// Resolves when every admitted call has finished its turn: its script's process group is gone or
+// has been sent SIGKILL, which can be after the call itself has failed on a timeout. A queued call
+// waits on this gate (`run.finished`), not on the previous call's result, so a timed-out script
+// that ignores SIGTERM never overlaps the next one.
+let routingTail: Promise<void> = Promise.resolve();
+let routingInFlight = 0;
+let routingWaiting = 0;
 
 export async function waitForRoutingScriptIdleForTests(): Promise<void> {
-  await routingScriptFinished;
+  for (let tail = routingTail; ; tail = routingTail) {
+    await tail;
+    if (tail === routingTail) return;
+  }
+}
+
+// Resolves when `turn` does; rejects with the busy error once `ms` have passed.
+async function waitForTurn(turn: Promise<void>, ms: number): Promise<void> {
+  if (ms <= 0) throw new Error(ROUTING_BUSY_MESSAGE);
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(ROUTING_BUSY_MESSAGE)), ms);
+  });
+  try {
+    await Promise.race([turn, expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function runRoutingScriptHandler(
@@ -282,20 +308,47 @@ export async function runRoutingScriptHandler(
   if (process.platform === "win32") {
     throw new Error("Routing scripts are not supported on Windows.");
   }
+  // Paseo gives a plugin request the same 30 s as one script run, so time spent queued comes out
+  // of the run's own budget.
+  const startedAt = performance.now();
   const settings = await readSettings();
-  const scriptPath = await resolveRoutingScript(settings.routingScriptPath);
-  if (routingScriptRunning) {
-    throw new Error("A routing script is already running; try again when it has finished.");
+  let scriptPath = await resolveRoutingScript(settings.routingScriptPath);
+
+  const queued = routingInFlight > 0;
+  if (queued && routingWaiting >= MAX_QUEUED_ROUTING_CALLS) {
+    throw new Error(ROUTING_BUSY_MESSAGE);
   }
-  routingScriptRunning = true;
-  // The guard is held until the script's process group is gone or has been sent SIGKILL, which can
-  // be after the call itself has failed on a timeout.
-  const run = startScriptCapped(scriptPath, input.payload, limits);
-  routingScriptFinished = run.finished.then(() => {
-    routingScriptRunning = false;
-    routingScriptFinished = null;
+  const previous = routingTail;
+  const myTurn = Promise.withResolvers<void>();
+  routingTail = myTurn.promise;
+  routingInFlight += 1;
+  void myTurn.promise.then(() => {
+    routingInFlight -= 1;
   });
-  void routingScriptFinished;
+
+  let run: ScriptRun;
+  try {
+    let runLimits = limits;
+    if (queued) {
+      routingWaiting += 1;
+      try {
+        await waitForTurn(previous, limits.timeoutMs - (performance.now() - startedAt));
+      } finally {
+        routingWaiting -= 1;
+      }
+      // The configuration may have changed while this call waited.
+      scriptPath = await resolveRoutingScript((await readSettings()).routingScriptPath);
+      const remaining = Math.floor(limits.timeoutMs - (performance.now() - startedAt));
+      if (remaining <= 0) throw new Error(ROUTING_BUSY_MESSAGE);
+      runLimits = { ...limits, timeoutMs: remaining };
+    }
+    run = startScriptCapped(scriptPath, input.payload, runLimits);
+  } catch (error) {
+    // This call never ran: pass the turn on once the one in front is done, so the order holds.
+    void previous.then(() => myTurn.resolve());
+    throw error;
+  }
+  void run.finished.then(() => myTurn.resolve());
   const stdout = await run.result;
 
   if (!stdout) return {};
