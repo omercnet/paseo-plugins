@@ -38,6 +38,8 @@ function makeRoot(): string {
   return root;
 }
 
+const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
 describe("runRoutingScriptHandler", () => {
   function writeScript(root: string, name: string, body: string, mode = 0o755): string {
     const path = join(root, name);
@@ -467,6 +469,29 @@ describe("runRoutingScriptHandler", () => {
     await expect(route(quick, {}, FAST_LIMITS)).resolves.toEqual({});
   });
 
+  test("work abandoned when the budget is already spent cannot raise an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", record);
+    try {
+      const failing = async () => {
+        await pause(20);
+        throw new Error("settings went away");
+      };
+      await expect(
+        runRoutingScriptHandler({ payload: {} }, failing, {
+          timeoutMs: 0,
+          outputBytes: 1024,
+          killGraceMs: 100,
+        }),
+      ).rejects.toThrow(/took longer than the time budget/);
+      await pause(150);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+  });
+
   test("signals the process group once after a script exits, never again at close", async () => {
     const root = makeRoot();
     const script = writeScript(root, "quick3.sh", "echo '{}'");
@@ -536,7 +561,6 @@ describe("runRoutingScriptHandler", () => {
 
   describe("queue", () => {
     const LONG = { timeoutMs: 5_000, outputBytes: 1024, killGraceMs: 200 };
-    const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
     // Appends "start NAME" / "end NAME" to one log so the order of the runs can be read back.
     function logging(root: string, name: string, log: string, seconds: string): string {
