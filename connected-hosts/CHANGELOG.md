@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/omercnet/paseo-plugins/compare/connected-hosts-v0.2.3...connected-hosts-v0.2.4) (2026-11-20)
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.17.0-beta.1 ([b099c0e](https://github.com/omercnet/paseo-plugins/commit/b099c0ef5e1268127e84e382b8452a83413d8952))
+
 ## [0.2.3](https://github.com/omercnet/paseo-plugins/compare/connected-hosts-v0.2.2...connected-hosts-v0.2.3) (2026-11-10)
 
 

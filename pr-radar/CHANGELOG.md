@@ -6,6 +6,18 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.3.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.2.3...pr-radar-v3.3.0) (2026-11-20)
+
+
+### Features
+
+* **pr-radar:** add Issues tab, DPRs, workspace launch chooser, and routing settings ([#618](https://github.com/omercnet/paseo-plugins/issues/618)) ([@djbclark](https://github.com/djbclark)) ([9d4c1ea](https://github.com/omercnet/paseo-plugins/commit/9d4c1ea7a23d9297e6eff18251ff8dc0ad1cc680))
+
+
+### Bug Fixes
+
+* **deps:** support Paseo 0.17.0-beta.1 ([b099c0e](https://github.com/omercnet/paseo-plugins/commit/b099c0ef5e1268127e84e382b8452a83413d8952))
+
 ## [3.2.3](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.2.2...pr-radar-v3.2.3) (2026-11-14)
 
 
