@@ -390,6 +390,14 @@ describe("runRoutingScriptHandler", () => {
     expect(existsSync(ran)).toBe(true);
   });
 
+  test("never keeps a relative PATH entry", async () => {
+    // A relative entry is searched from the script's working directory, not from where it was read.
+    await expect(trustedScriptPath(undefined, ["bin", "./", "", "/usr/bin"])).resolves.toBe(
+      "/usr/bin",
+    );
+    await expect(trustedScriptPath(undefined, ["bin", "./", ""])).resolves.toBe("");
+  });
+
   test("runs the script from a fixed directory, not the daemon's", async () => {
     const root = makeRoot();
     const cwdFile = join(root, "cwd.txt");

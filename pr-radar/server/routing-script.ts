@@ -69,6 +69,8 @@ export async function trustedScriptPath(
   const trustedOwner = (owner: number) => uid === undefined || owner === uid || owner === 0;
   const kept: string[] = [];
   for (const dir of dirs) {
+    // A relative entry would be looked up against the script's cwd, which is what this guards against.
+    if (!isAbsolute(dir)) continue;
     try {
       // Strict: a sticky bit stops others deleting each other's files, not creating a `python3`.
       // The entry may be, or sit behind, a symbolic link: every link on the way, the directory
