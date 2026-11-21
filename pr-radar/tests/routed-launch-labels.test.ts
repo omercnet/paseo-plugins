@@ -302,6 +302,12 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
     ["an invisible character", `a${cp(0x200b)}de.kind`],
     ["a bidi override", `${cp(0x202e)}ade.kind`],
     ["a full-width letter", `${cp(0xff41)}de.kind`],
+    // `\s` matches these, so a split on it cut the prefix in two valid ones (`a`, `de.kind`), and
+    // neither protected ade.kind.
+    ["a mid-word byte-order mark", `a${cp(0xfeff)}de.kind`],
+    ["a mid-word no-break space", `a${cp(0xa0)}de.kind`],
+    ["a mid-word line separator", `a${cp(0x2028)}de.kind`],
+    ["a mid-word ideographic space", `a${cp(0x3000)}de.kind`],
     // Cyrillic a: no comparison sees through it, so the malformed prefix itself blocks the rule.
     ["a look-alike letter", `${cp(0x430)}de.kind`],
   ])(

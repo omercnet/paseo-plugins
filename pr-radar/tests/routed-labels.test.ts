@@ -563,6 +563,42 @@ describe("a fallback rule never drops a downgrade label", () => {
     }
   });
 
+  // `\s` in JavaScript also matches these, so splitting on it turned one malformed entry into two
+  // valid prefixes (`a` and `de.kind`), neither of which protects ade.kind. Only ASCII space, tab,
+  // line breaks and the comma separate entries.
+  test.each([
+    ["a byte-order mark", cp(0xfeff)],
+    ["a no-break space", cp(0xa0)],
+    ["a line separator", cp(0x2028)],
+    ["a paragraph separator", cp(0x2029)],
+    ["an ideographic space", cp(0x3000)],
+    ["an ogham space mark", cp(0x1680)],
+    ["an en space", cp(0x2002)],
+    ["a narrow no-break space", cp(0x202f)],
+    ["a vertical tab", "\v"],
+    ["a form feed", "\f"],
+  ])("%s inside a prefix keeps it one malformed entry", (_name, space) => {
+    const prefix = `a${space}de.kind`;
+    expect(parseLabelPrefixes(prefix)).toEqual([]);
+    expect(labelPrefixesProblem(prefix)).toContain("Ignoring every prefix");
+    // The key that the two halves would have failed to protect is still protected from the fallback.
+    const decision = blockedBy({ "ade.kind": "external-review", "x y": "1" }, prefix);
+    expect(decision?.fallbackRefusal).toMatch(/cannot drop it|cannot be used until it is fixed/);
+  });
+
+  test("a Unicode space between two prefixes is not a separator either", () => {
+    expect(parseLabelPrefixes(`ade.${cp(0xa0)}team/`)).toEqual([]);
+    expect(parseLabelPrefixes(`ade.${cp(0xfeff)}`)).toEqual([]);
+  });
+
+  test("ASCII space, tab, line breaks and commas still separate prefixes", () => {
+    expect(parseLabelPrefixes("ade. \tteam/\r\n,, org.kind")).toEqual([
+      "ade.",
+      "team/",
+      "org.kind",
+    ]);
+  });
+
   test("the guard names the label when it can and calls the prefix malformed when it cannot", () => {
     const named = blockedBy({ "ade.kind": "external-review", "x y": "1" }, `a${cp(0x200b)}de.kind`);
     expect(named?.fallbackRefusal).toContain(`"ade.kind"`);

@@ -69,8 +69,14 @@ export function parseLabelPrefixes(raw: string): string[] {
   return prefixes.every((prefix) => prefixProblem(prefix) === null) ? prefixes : [];
 }
 
+// The only separators between prefix entries: ASCII space, tab, line breaks and the comma. Not
+// `\s`: in JavaScript that also matches U+FEFF, U+00A0, U+2028, U+3000 and every other Unicode
+// space, so `a<U+FEFF>de.kind` would split into the valid prefixes `a` and `de.kind`, neither of
+// which protects `ade.kind`. Any other character stays inside its entry and makes it malformed.
+const PREFIX_SEPARATORS = /[ \t\n\r,]+/;
+
 function splitPrefixes(raw: string): string[] {
-  return raw.split(/[\s,]+/).filter((prefix) => prefix.length > 0);
+  return raw.split(PREFIX_SEPARATORS).filter((prefix) => prefix.length > 0);
 }
 
 // One normalizer for both sides of the downgrade guard's comparison: a configured prefix and a key
