@@ -1,3 +1,5 @@
+import { type LabelFallbackRule, LabelFallbackRuleSchema } from "./settings";
+
 // Labels a routing script asks for. The script sees PR text on stdin, so its output is untrusted:
 // every label is validated all or nothing, and a bad set blocks the launch instead of dropping
 // labels (a dropped trust-downgrade label would launch an agent without it).
@@ -7,6 +9,8 @@ export const MAX_SCRIPT_LABELS = 16;
 export const MAX_LABEL_KEY_LEN = 128;
 export const MAX_LABEL_VALUE_LEN = 128;
 export const ROUTE_NAMESPACE = "pr-radar.route.";
+export const MAX_FALLBACK_DAYS = 7;
+const MAX_FALLBACK_MS = MAX_FALLBACK_DAYS * 24 * 60 * 60 * 1_000;
 const MAX_SHOWN_KEY_LEN = 64;
 
 const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
@@ -33,10 +37,12 @@ export interface CheckedLabels {
 
 export interface LabelPolicy {
   routingLabelPrefixes: string;
+  routingLabelFallbacks: readonly LabelFallbackRule[];
 }
 
 export type RoutedLabelsDecision =
   | { status: "ok"; labels: Record<string, string> }
+  | { status: "fallback"; rejected: RejectedLabel[]; rule: LabelFallbackRule; warning: string }
   | { status: "blocked"; rejected: RejectedLabel[]; message: string };
 
 export class RoutedLabelsBlockedError extends Error {
@@ -238,6 +244,46 @@ export function checkRoutedLabels(raw: unknown, prefixes: readonly string[]): Ch
   return { labels: rejected.length > 0 ? {} : labels, rejected };
 }
 
+export type FallbackRuleStatus = "active" | "expired" | "too-far";
+
+export function fallbackRuleStatus(rule: LabelFallbackRule, now: number): FallbackRuleStatus {
+  const until = Date.parse(rule.until);
+  if (!Number.isFinite(until) || until <= now) return "expired";
+  if (until - now > MAX_FALLBACK_MS) return "too-far";
+  return "active";
+}
+
+export function describeFallbackStatus(rule: LabelFallbackRule, now: number): string {
+  const status = fallbackRuleStatus(rule, now);
+  if (status === "expired") return `expired ${rule.until}`;
+  if (status === "too-far") {
+    return `ignored: ends more than ${MAX_FALLBACK_DAYS} days from now (${rule.until})`;
+  }
+  return `active until ${rule.until}`;
+}
+
+export function activeFallbackRule(
+  rules: readonly LabelFallbackRule[],
+  repository: string,
+  now: number,
+): LabelFallbackRule | undefined {
+  const repo = repository.toLowerCase();
+  return rules.find(
+    (rule) =>
+      (rule.repository === "*" || rule.repository.toLowerCase() === repo) &&
+      fallbackRuleStatus(rule, now) === "active",
+  );
+}
+
+// What a rule does: the repository without regard to case and the instant it ends, the same way
+// `activeFallbackRule` and `fallbackRuleStatus` read it. Two rules with the same target are the
+// same rule, whatever their spelling (`Acme/Api` and `acme/api`, `18:00Z` and `19:00+01:00`).
+// A timestamp that does not parse stays as written, so it matches only itself.
+export function fallbackRuleTarget(rule: Pick<LabelFallbackRule, "repository" | "until">): string {
+  const until = Date.parse(rule.until);
+  return `${rule.repository.toLowerCase()} ${Number.isFinite(until) ? until : `raw:${rule.until}`}`;
+}
+
 export function describeRejection({ key, reason }: RejectedLabel): string {
   return `${quoteLabelKey(key)}: ${reason}`;
 }
@@ -253,17 +299,64 @@ export function describeRejected(rejected: readonly RejectedLabel[]): string {
   return `${listed.join("; ")}${rest}`;
 }
 
+export function describeFallbackRule(rule: LabelFallbackRule): string {
+  const note = rule.note ? ` (${rule.note})` : "";
+  return `${rule.repository} until ${rule.until}${note}`;
+}
+
 export function decideRoutedLabels(input: {
   labels: unknown;
+  repository: string;
   policy: LabelPolicy;
+  now: number;
 }): RoutedLabelsDecision {
-  const { labels, policy } = input;
+  const { labels, repository, policy, now } = input;
   const checked = checkRoutedLabels(labels, parseLabelPrefixes(policy.routingLabelPrefixes));
   if (checked.rejected.length === 0) return { status: "ok", labels: checked.labels };
 
+  const listed = describeRejected(checked.rejected);
+  const rule = activeFallbackRule(policy.routingLabelFallbacks, repository, now);
+  if (rule) {
+    return {
+      status: "fallback",
+      rejected: checked.rejected,
+      rule,
+      warning: `Routing script labels rejected (${listed}). Fallback rule ${describeFallbackRule(rule)} lets this launch go ahead without any script labels.`,
+    };
+  }
   return {
     status: "blocked",
     rejected: checked.rejected,
-    message: `${BLOCKED_HEADLINE} (${describeRejected(checked.rejected)}). Fix the script.`,
+    message: `${BLOCKED_HEADLINE} (${listed}). Fix the script, or add a short-term fallback rule for ${repository} in the PR Radar settings.`,
   };
+}
+
+export type ParsedFallbackRule = { rule: LabelFallbackRule } | { error: string };
+
+// "owner/name 2026-11-25T18:00Z optional note": the add-rule field in settings.
+export function parseFallbackRuleInput(input: string, now: number): ParsedFallbackRule {
+  const [repository, until, ...noteWords] = input.trim().split(/\s+/);
+  if (!repository || !until) {
+    return {
+      error:
+        "Enter: owner/name (or *), an ISO-8601 time such as 2026-11-25T18:00Z, then an optional note.",
+    };
+  }
+  const note = noteWords.join(" ");
+  const parsed = LabelFallbackRuleSchema.safeParse({
+    repository,
+    until,
+    ...(note ? { note } : {}),
+  });
+  if (!parsed.success) {
+    return {
+      error: "Use owner/name (or *) and an ISO-8601 time with a zone, e.g. 2026-11-25T18:00Z.",
+    };
+  }
+  const status = fallbackRuleStatus(parsed.data, now);
+  if (status === "expired") return { error: "That time has already passed." };
+  if (status === "too-far") {
+    return { error: `Fallback rules must end within ${MAX_FALLBACK_DAYS} days.` };
+  }
+  return { rule: parsed.data };
 }
