@@ -393,7 +393,9 @@ describe("fallback rules", () => {
     routingLabelPrefixes: "ade.",
     routingLabelFallbacks: rules,
   });
-  const bad = { "pr-radar.cwd": "CWD-BASE", "ade.kind": "external-review" };
+  // `team` is not admitted by the `ade.` prefix, so the rule may drop it; an admitted key would be
+  // a downgrade label, which no rule can drop (see the next describe).
+  const bad = { "pr-radar.cwd": "CWD-BASE", team: "core" };
   const decide = (rules: LabelFallbackRule[], repository = "acme/api") =>
     decideRoutedLabels({ labels: bad, repository, policy: policy(rules), now: NOW });
 

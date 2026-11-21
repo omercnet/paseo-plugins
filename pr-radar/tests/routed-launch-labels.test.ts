@@ -7,7 +7,11 @@ import type { RadarRow } from "../client/radar";
 import type { StartAgentLaunchRequest } from "../client/start-agent-modal";
 import contribute from "../index.server";
 import { decideRoutedLabels, RoutedLabelsBlockedError } from "../shared/routed-labels";
-import { type PrRadarSettings, PrRadarSettingsSchema } from "../shared/settings";
+import {
+  migratePrRadarSettings,
+  type PrRadarSettings,
+  PrRadarSettingsSchema,
+} from "../shared/settings";
 import { type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
@@ -243,9 +247,7 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
         },
       ],
     });
-    const outcome = await launchVia(settings, {
-      labels: { "ade.kind": "external-review", "paseo.x": "y" },
-    });
+    const outcome = await launchVia(settings, { labels: { team: "core", "paseo.x": "y" } });
     expect(outcome.launched).toBe(true);
     expect(outcome.launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
     expect(outcome.message).toContain(`"paseo.x": key is reserved`);
@@ -297,6 +299,21 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
   ])("a fallback rule that is %s does not unblock the launch", async (_why, rule) => {
     const outcome = await launchVia(settingsWith({ routingLabelFallbacks: [rule] }), {
       labels: { "paseo.x": "y" },
+    });
+    expect(outcome.launched).toBe(false);
+    expect(outcome.launch.created).toEqual([]);
+  });
+});
+
+describe.each(PATHS)("settings saved by the label-only version, through %s", (_name, launchVia) => {
+  // Version 2 documents carry no fallback field, so no rule is active after they load.
+  test("they load with no rule and a rejected label set still blocks", async () => {
+    const settings = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ routingLabelPrefixes: "ade." }),
+    );
+    expect(settings.routingLabelFallbacks).toEqual([]);
+    const outcome = await launchVia(settings, {
+      labels: { "ade.kind": "external-review", "paseo.x": "y" },
     });
     expect(outcome.launched).toBe(false);
     expect(outcome.launch.created).toEqual([]);

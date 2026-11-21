@@ -79,7 +79,8 @@ function ReadyPrRadarSettings({
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
   const [error, setError] = useState<string | null>(null);
-  const [prefixText, setPrefixText] = useState(settings.values.routingLabelPrefixes);
+  // Remounts the prefix input after a reset: it only reads its initial value once.
+  const [prefixInputKey, setPrefixInputKey] = useState(0);
   const [ruleText, setRuleText] = useState("");
   const [ruleError, setRuleError] = useState<string | null>(null);
   const [ruleInputKey, setRuleInputKey] = useState(0);
@@ -178,6 +179,7 @@ function ReadyPrRadarSettings({
     setDirQueryText(DEFAULT_PR_RADAR_SETTINGS.sourceCodeDir);
     const saved = await savePatch({ ...DEFAULT_PR_RADAR_SETTINGS });
     if (saved) {
+      setPrefixInputKey((key) => key + 1);
       toast.show("PR Radar settings reset to defaults.", { variant: "success" });
     }
   }
@@ -300,13 +302,11 @@ function ReadyPrRadarSettings({
           <SettingsInput
             label="Allowed label prefixes"
             hint="Routing script labels that one of these (comma or space separated) admits keep their name. A prefix admits itself, keys that continue it with . or / (ade.kind admits ade.kind.x, not ade.kinder), and every key under a prefix that ends in . or / (ade. admits ade.anything). Prefer the narrowest prefix, such as ade.kind. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
-            error={labelPrefixesProblem(prefixText)}
+            key={prefixInputKey}
+            error={labelPrefixesProblem(settings.values.routingLabelPrefixes)}
             initialValue={settings.values.routingLabelPrefixes}
             placeholder="None: all script labels go under pr-radar.route."
-            onChangeText={(next) => {
-              setPrefixText(next);
-              void savePatch({ routingLabelPrefixes: next });
-            }}
+            onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
           />
           {settings.values.routingLabelFallbacks.map((rule) => (
             <SettingsAction

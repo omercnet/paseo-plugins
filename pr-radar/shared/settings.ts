@@ -98,9 +98,17 @@ export const PrRadarSettingsSchema = z
 
 export type PrRadarSettings = z.infer<typeof PrRadarSettingsSchema>;
 
+// Version 2 (the label feature without fallback rules) dropped `routingLabelFallbacks`, and its
+// migration deleted that key from older documents. Rules are live again here, so a document saved
+// as version 1 keeps its rules and one saved as version 2 simply has none: both parse as they are.
+export function migratePrRadarSettings(values: unknown): unknown {
+  return values;
+}
+
 export const prRadarSettings = defineSettings({
   id: "pr-radar",
   scope: "host",
-  version: 1,
+  version: 3,
   schema: PrRadarSettingsSchema,
+  migrate: migratePrRadarSettings,
 });
