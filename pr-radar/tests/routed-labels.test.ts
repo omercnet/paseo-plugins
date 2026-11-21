@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   activeFallbackRule,
   checkRoutedLabels,
@@ -10,8 +10,10 @@ import {
   MAX_LABEL_KEY_LEN,
   MAX_LABEL_VALUE_LEN,
   MAX_SCRIPT_LABELS,
+  nextFallbackBoundary,
   parseFallbackRuleInput,
   parseLabelPrefixes,
+  watchFallbackBoundary,
 } from "../shared/routed-labels";
 import type { LabelFallbackRule } from "../shared/settings";
 
@@ -612,5 +614,73 @@ describe("a fallback rule never drops a downgrade label", () => {
       now: NOW,
     });
     expect(decision.status === "blocked" && decision.fallbackRefusal).toBeUndefined();
+  });
+});
+
+describe("a screen that decided at render time follows a rule's expiry", () => {
+  afterEach(() => vi.useRealTimers());
+  const labels = { "paseo.x": "y" };
+  const decideAt = (rules: LabelFallbackRule[], now: number) =>
+    decideRoutedLabels({
+      labels,
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: rules },
+      now,
+    }).status;
+
+  test("the next boundary is the soonest expiry or cap entry ahead of now", () => {
+    const rules = [
+      { repository: "acme/api", until: iso(2 * DAY) },
+      { repository: "*", until: iso(DAY) },
+      { repository: "acme/web", until: iso(-DAY) },
+      { repository: "acme/x", until: iso(9 * DAY) },
+    ];
+    expect(nextFallbackBoundary(rules, NOW)).toBe(NOW + DAY);
+    expect(nextFallbackBoundary(rules.slice(2, 3), NOW)).toBeNull();
+    expect(nextFallbackBoundary([], NOW)).toBeNull();
+    // A rule too far out has its own boundary: the day it comes within seven days.
+    expect(nextFallbackBoundary(rules.slice(3), NOW)).toBe(NOW + 2 * DAY);
+  });
+
+  test("the timer fires after the rule ends, and the decision flips from fallback to blocked", () => {
+    vi.useFakeTimers({ now: NOW });
+    const rules = [{ repository: "acme/api", until: iso(60_000) }];
+    let now = Date.now();
+    let ticks = 0;
+    watchFallbackBoundary(rules, now, () => {
+      ticks += 1;
+      now = Date.now();
+    });
+    expect(decideAt(rules, now)).toBe("fallback");
+    vi.advanceTimersByTime(59_000);
+    expect(ticks).toBe(0);
+    vi.advanceTimersByTime(2_000);
+    expect(ticks).toBe(1);
+    expect(decideAt(rules, now)).toBe("blocked");
+  });
+
+  test("cancelling stops the timer, and no rule means no timer", () => {
+    vi.useFakeTimers({ now: NOW });
+    let ticks = 0;
+    const cancel = watchFallbackBoundary([{ repository: "*", until: iso(1_000) }], NOW, () => {
+      ticks += 1;
+    });
+    cancel();
+    watchFallbackBoundary([], NOW, () => {
+      ticks += 1;
+    })();
+    vi.advanceTimersByTime(10_000);
+    expect(ticks).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a boundary beyond the timer limit waits at the limit instead of firing at once", () => {
+    vi.useFakeTimers({ now: NOW });
+    let ticks = 0;
+    watchFallbackBoundary([{ repository: "*", until: iso(40 * DAY) }], NOW, () => {
+      ticks += 1;
+    });
+    vi.advanceTimersByTime(1_000);
+    expect(ticks).toBe(0);
   });
 });

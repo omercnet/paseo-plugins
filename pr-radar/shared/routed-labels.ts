@@ -274,6 +274,43 @@ export function fallbackRuleStatus(rule: LabelFallbackRule, now: number): Fallba
   return "active";
 }
 
+// The next instant a rule changes what it does: it expires, or it comes within the seven day cap
+// and starts to apply. Null when no rule has a boundary ahead.
+export function nextFallbackBoundary(
+  rules: readonly LabelFallbackRule[],
+  now: number,
+): number | null {
+  let next: number | null = null;
+  for (const rule of rules) {
+    const until = Date.parse(rule.until);
+    if (!Number.isFinite(until)) continue;
+    for (const boundary of [until, until - MAX_FALLBACK_MS]) {
+      if (boundary > now && (next === null || boundary < next)) next = boundary;
+    }
+  }
+  return next;
+}
+
+// A timer reads at most about 24.8 days; the cap keeps a far boundary from firing at once.
+const MAX_TIMER_MS = 2_147_483_647;
+// Fires a little after the boundary so the clock reads past it when the callback runs.
+const BOUNDARY_SLACK_MS = 50;
+
+// Calls `onChange` when a rule's status may have changed, so a screen that decided at render time
+// does not keep showing an expired rule as active. The caller re-runs it with the new time, so a
+// timer that fired early, or a boundary beyond the timer limit, just schedules the next one.
+// Returns a function that cancels the timer.
+export function watchFallbackBoundary(
+  rules: readonly LabelFallbackRule[],
+  now: number,
+  onChange: () => void,
+): () => void {
+  const next = nextFallbackBoundary(rules, now);
+  if (next === null) return () => undefined;
+  const timer = setTimeout(onChange, Math.min(next - now + BOUNDARY_SLACK_MS, MAX_TIMER_MS));
+  return () => clearTimeout(timer);
+}
+
 export function describeFallbackStatus(rule: LabelFallbackRule, now: number): string {
   const status = fallbackRuleStatus(rule, now);
   if (status === "expired") return `expired ${rule.until}`;

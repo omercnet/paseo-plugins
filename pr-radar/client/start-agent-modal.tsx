@@ -8,6 +8,7 @@ import {
   decideRoutedLabels,
   describeLabel,
   describeRejection,
+  watchFallbackBoundary,
 } from "../shared/routed-labels";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
@@ -94,15 +95,31 @@ export function StartAgentModal({
   // What the launch will do with the routing script's labels: apply them, skip them under a
   // fallback rule, or refuse to start.
   const repository = row?.repository ?? "";
+  // The clock the fallback decision reads. A rule that ends while the window is open moves it, so
+  // the notice and the Start button follow the rule instead of staying on how it looked at render.
+  const [labelClock, setLabelClock] = useState(() => Date.now());
+  useEffect(
+    () =>
+      watchFallbackBoundary(settings.routingLabelFallbacks, labelClock, () =>
+        setLabelClock(Date.now()),
+      ),
+    [settings.routingLabelFallbacks, labelClock],
+  );
   const labelDecision = useMemo(
     () =>
       decideRoutedLabels({
         labels: routedLabels,
         repository,
         policy: settings,
-        now: Date.now(),
+        now: labelClock,
       }),
-    [routedLabels, repository, settings.routingLabelPrefixes, settings.routingLabelFallbacks],
+    [
+      routedLabels,
+      repository,
+      settings.routingLabelPrefixes,
+      settings.routingLabelFallbacks,
+      labelClock,
+    ],
   );
   const routedLabelText =
     labelDecision.status === "ok"
@@ -138,6 +155,7 @@ export function StartAgentModal({
     setContextMode(settings.defaultContextMode);
     setRoutedOptions(undefined);
     setRoutedLabels(undefined);
+    setLabelClock(Date.now());
     setRouteReason(null);
     setRouteError(null);
     setRoutingBusy(false);
