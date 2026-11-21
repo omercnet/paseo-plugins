@@ -404,14 +404,11 @@ export async function runRoutingScriptHandler(
       scriptPath = await withinBudget(preflight(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
     }
     const path = await withinBudget(trustedScriptPath(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
-    let runLimits = limits;
-    if (queued) {
-      // Taken last, after every await, so the script's own timer starts when the budget says.
-      const remaining = budgetLeft();
-      if (remaining <= 0) throw new Error(ROUTING_BUSY_MESSAGE);
-      runLimits = { ...limits, timeoutMs: remaining };
-    }
-    run = startScriptCapped(scriptPath, input.payload, runLimits, path);
+    // Taken last, after every await, so the script's own timer starts when the budget says. A first
+    // call has spent time on its settings read and path checks too, so it is trimmed like a queued one.
+    const remaining = budgetLeft();
+    if (remaining <= 0) throw new Error(queued ? ROUTING_BUSY_MESSAGE : ROUTING_PREFLIGHT_MESSAGE);
+    run = startScriptCapped(scriptPath, input.payload, { ...limits, timeoutMs: remaining }, path);
   } catch (error) {
     // This call never ran: pass the turn on once the one in front is done, so the order holds.
     stopWaiting();
