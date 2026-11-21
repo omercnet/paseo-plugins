@@ -104,19 +104,49 @@ describe("runRoutingScriptHandler", () => {
     expect(JSON.parse(readFileSync(captured, "utf8"))).toEqual({ pr: 7 });
   });
 
-  test("refuses a payload over the input cap without running the script", async () => {
+  test("refuses a payload one byte over the input cap without running the script", async () => {
     const root = makeRoot();
     const ran = join(root, "ran.txt");
     const script = writeScript(root, "cap.sh", `echo ran > "${ran}"\ncat > /dev/null\necho '{}'`);
-    const limits = { ...FAST_LIMITS, inputBytes: 200 };
-    await expect(route(script, { pr: { body: "x".repeat(300) } }, limits)).rejects.toThrow(
-      /input is \d+ bytes, over the 200 byte limit/,
+    const cap = 200;
+    const limits = { ...FAST_LIMITS, inputBytes: cap };
+    // What the script is sent: the JSON text and a newline. Each payload below is built to a byte
+    // count, so the test sits on the boundary rather than somewhere safely either side of it.
+    const serialized = (payload: Record<string, unknown>) =>
+      Buffer.byteLength(`${JSON.stringify(payload)}\n`);
+    const overhead = serialized({ pr: "" });
+    const atCap = { pr: "x".repeat(cap - overhead) };
+    const overCap = { pr: "x".repeat(cap - overhead + 1) };
+    expect(serialized(atCap)).toBe(cap);
+    expect(serialized(overCap)).toBe(cap + 1);
+
+    await expect(route(script, overCap, limits)).rejects.toThrow(
+      `input is ${cap + 1} bytes, over the ${cap} byte limit`,
     );
     expect(existsSync(ran)).toBe(false);
-    // The refusal took no place in line, and a payload at the cap still goes through. A
-    // multi-byte character counts by its bytes, not its length.
-    await expect(route(script, { pr: "x".repeat(150) }, limits)).resolves.toEqual({});
-    await expect(route(script, { pr: "\u00e9".repeat(150) }, limits)).rejects.toThrow(/over the/);
+    // The refusal took no place in line, and a payload of exactly the cap goes through.
+    await expect(route(script, atCap, limits)).resolves.toEqual({});
+    expect(existsSync(ran)).toBe(true);
+  });
+
+  test("counts the input cap in bytes, so a multi-byte character spends two", async () => {
+    const root = makeRoot();
+    const script = writeScript(root, "cap2.sh", "cat > /dev/null\necho '{}'");
+    const cap = 200;
+    const limits = { ...FAST_LIMITS, inputBytes: cap };
+    const serialized = (payload: Record<string, unknown>) =>
+      Buffer.byteLength(`${JSON.stringify(payload)}\n`);
+    const overhead = serialized({ pr: "" });
+    // "\u00e9" is two bytes, so half the room holds as many characters as it takes to fill the cap.
+    const atCap = { pr: "\u00e9".repeat((cap - overhead) / 2) };
+    const overCap = { pr: `${atCap.pr}x` };
+    expect(serialized(atCap)).toBe(cap);
+    expect(serialized(overCap)).toBe(cap + 1);
+    expect(overCap.pr.length).toBeLessThan(cap);
+    await expect(route(script, atCap, limits)).resolves.toEqual({});
+    await expect(route(script, overCap, limits)).rejects.toThrow(
+      `input is ${cap + 1} bytes, over the ${cap} byte limit`,
+    );
   });
 
   test("sends a payload of 256 KiB whole when no cap is passed", async () => {
