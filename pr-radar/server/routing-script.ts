@@ -61,6 +61,11 @@ export async function trustedScriptPath(
   for (const dir of dirs) {
     try {
       // Strict: a sticky bit stops others deleting each other's files, not creating a `python3`.
+      // The entry may be, or sit behind, a symbolic link: every link on the way, the directory
+      // holding it and that directory's ancestors are checked, then the real directory it ends at
+      // and every real parent of that (a link into a directory under a writable parent would
+      // otherwise pass, since a walk of the entry's own parents never reaches it).
+      await assertTrustedSymlinkChain(dir, trustedOwner, verified, false);
       await assertTrustedDirectories(dir, trustedOwner, verified, false);
       kept.push(dir);
     } catch {
@@ -75,6 +80,8 @@ type OwnerCheck = (owner: number) => boolean;
 /**
  * `start` and every directory above it must have a trusted owner and not be group/other-writable.
  * A sticky directory (like /tmp) is exempt from the write test unless `allowSticky` is false.
+ * `start` is resolved first, so a symbolic link is judged by the real directory it ends at and by
+ * that directory's real parents, never by the parents of the link's own spelling.
  */
 async function assertTrustedDirectories(
   start: string,
@@ -82,7 +89,7 @@ async function assertTrustedDirectories(
   verified: Set<string>,
   allowSticky = true,
 ): Promise<void> {
-  for (let dir = start; !verified.has(dir); dir = dirname(dir)) {
+  for (let dir = await realpath(start); !verified.has(dir); dir = dirname(dir)) {
     const dirInfo = await stat(dir);
     if (!trustedOwner(dirInfo.uid)) {
       throw new Error(
@@ -113,8 +120,9 @@ const MAX_SYMLINK_HOPS = 32;
 async function assertTrustedSymlinkChain(
   expanded: string,
   trustedOwner: OwnerCheck,
+  verifiedDirs = new Set<string>(),
+  allowSticky = true,
 ): Promise<void> {
-  const verifiedDirs = new Set<string>();
   const split = (path: string) => path.split("/").filter((part) => part !== "" && part !== ".");
   let pending = split(expanded);
   let current = "/";
@@ -124,7 +132,7 @@ async function assertTrustedSymlinkChain(
     pending = rest;
     if (name === "..") {
       // The directory being left is part of the path too, even though realpath will not list it.
-      await assertTrustedDirectories(current, trustedOwner, verifiedDirs);
+      await assertTrustedDirectories(current, trustedOwner, verifiedDirs, allowSticky);
       current = dirname(current);
       continue;
     }
@@ -145,7 +153,7 @@ async function assertTrustedSymlinkChain(
     }
     // `current` holds no links (each one is replaced by its target), so this is the real directory
     // that contains the link.
-    await assertTrustedDirectories(current, trustedOwner, verifiedDirs);
+    await assertTrustedDirectories(current, trustedOwner, verifiedDirs, allowSticky);
     const target = await readlink(next);
     pending = [...split(target), ...pending];
     if (isAbsolute(target)) current = "/";

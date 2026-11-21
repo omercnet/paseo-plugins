@@ -368,6 +368,68 @@ describe("runRoutingScriptHandler", () => {
     await expect(resolveRoutingScript(script)).resolves.toBe(script);
   });
 
+  describe("a symbolic link in the fixed PATH", () => {
+    // The temp root's own ancestors are marked settled (see above); only what is below it decides.
+    function setup() {
+      const root = makeRoot();
+      const uid = process.getuid?.();
+      const settled = new Set([root]);
+      const safeBin = join(root, "safe", "bin");
+      mkdirSync(safeBin, { recursive: true });
+      chmodSync(join(root, "safe"), 0o755);
+      chmodSync(safeBin, 0o755);
+      return { root, uid, settled, safeBin };
+    }
+
+    test.each([
+      ["group-writable", 0o775],
+      ["other-writable", 0o777],
+    ])("is dropped when its target sits under a %s parent", async (_label, parentMode) => {
+      const { root, uid, settled, safeBin } = setup();
+      const wide = join(root, "wide");
+      mkdirSync(join(wide, "bin"), { recursive: true });
+      chmodSync(join(wide, "bin"), 0o755);
+      chmodSync(wide, parentMode);
+      // The link's own directory and the target directory both look fine; only the target's real
+      // parent can be swapped by someone else.
+      const links = join(root, "links");
+      mkdirSync(links);
+      chmodSync(links, 0o755);
+      const risky = join(links, "risky");
+      const fine = join(links, "fine");
+      symlinkSync(join(wide, "bin"), risky);
+      symlinkSync(safeBin, fine);
+      expect(await trustedScriptPath(uid, [risky, fine], settled)).toBe(fine);
+    });
+
+    test("is dropped when a link on the way sits in a writable directory", async () => {
+      const { root, uid, settled, safeBin } = setup();
+      const open = join(root, "open");
+      mkdirSync(open);
+      chmodSync(open, 0o777);
+      const hop = join(open, "hop");
+      symlinkSync(safeBin, hop);
+      const links = join(root, "links");
+      mkdirSync(links);
+      chmodSync(links, 0o755);
+      // links/entry -> open/hop -> safe/bin: the real target and its parents are all fine, but
+      // anyone can replace open/hop.
+      const entry = join(links, "entry");
+      symlinkSync(hop, entry);
+      expect(await trustedScriptPath(uid, [entry, safeBin], settled)).toBe(safeBin);
+    });
+
+    test("is kept when every link, its directory and the target's real parents are trusted", async () => {
+      const { root, uid, settled, safeBin } = setup();
+      const links = join(root, "links");
+      mkdirSync(links);
+      chmodSync(links, 0o755);
+      const entry = join(links, "entry");
+      symlinkSync(safeBin, entry);
+      expect(await trustedScriptPath(uid, [entry], settled)).toBe(entry);
+    });
+  });
+
   test("resolves the interpreter on the fixed PATH, not through the daemon's", async () => {
     const root = makeRoot();
     const evil = join(root, "evil-bin");
