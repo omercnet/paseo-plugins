@@ -236,12 +236,19 @@ export function checkRoutedLabels(raw: unknown, prefixes: readonly string[]): Ch
   return { labels: rejected.length > 0 ? {} : labels, rejected };
 }
 
+export function describeRejection({ key, reason }: RejectedLabel): string {
+  return `${quoteLabelKey(key)}: ${reason}`;
+}
+
+export const BLOCKED_HEADLINE =
+  "Launch blocked: the routing script returned labels PR Radar will not apply";
+
+// The notice lists the first few; the Start New Agent window lists them all.
 export function describeRejected(rejected: readonly RejectedLabel[]): string {
-  const listed = rejected
-    .slice(0, MAX_LISTED_REJECTIONS)
-    .map(({ key, reason }) => `${quoteLabelKey(key)}: ${reason}`);
+  const listed = rejected.slice(0, MAX_LISTED_REJECTIONS).map(describeRejection);
   const more = rejected.length - listed.length;
-  return `${listed.join("; ")}${more > 0 ? `; and ${more} more` : ""}`;
+  const rest = more > 0 ? `; and ${more} more (Start New Agent lists every rejected label)` : "";
+  return `${listed.join("; ")}${rest}`;
 }
 
 export function decideRoutedLabels(input: {
@@ -255,6 +262,6 @@ export function decideRoutedLabels(input: {
   return {
     status: "blocked",
     rejected: checked.rejected,
-    message: `Launch blocked: the routing script returned labels PR Radar will not apply (${describeRejected(checked.rejected)}). Fix the script.`,
+    message: `${BLOCKED_HEADLINE} (${describeRejected(checked.rejected)}). Fix the script.`,
   };
 }

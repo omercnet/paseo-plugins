@@ -3,6 +3,7 @@ import {
   checkRoutedLabels,
   decideRoutedLabels,
   describeLabel,
+  describeRejection,
   displayLabelKey,
   labelPrefixesProblem,
   MAX_LABEL_KEY_LEN,
@@ -334,7 +335,14 @@ describe("hostile label sets", () => {
       policy: { routingLabelPrefixes: "" },
     });
     expect(decision.status === "blocked" && decision.message).toContain("and 7 more");
+    expect(decision.status === "blocked" && decision.message).toContain(
+      "Start New Agent lists every rejected label",
+    );
     expect(decision.status === "blocked" && decision.message).not.toContain("paseo.k6");
+    // The notice is cut, the decision is not: the modal renders every rejection from it.
+    const all = decision.status === "blocked" ? decision.rejected.map(describeRejection) : [];
+    expect(all).toHaveLength(12);
+    expect(all[11]).toContain("paseo.k11");
   });
 
   test("a key cannot pass for a second sentence in the notice: it is quoted", () => {

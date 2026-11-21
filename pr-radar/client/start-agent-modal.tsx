@@ -3,7 +3,12 @@ import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { decideRoutedLabels, describeLabel } from "../shared/routed-labels";
+import {
+  BLOCKED_HEADLINE,
+  decideRoutedLabels,
+  describeLabel,
+  describeRejection,
+} from "../shared/routed-labels";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
@@ -573,9 +578,19 @@ export function StartAgentModal({
               <Text style={styles.hint}>{`Labels from routing script: ${routedLabelText}`}</Text>
             ) : null}
             {labelDecision.status === "blocked" ? (
-              <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
-                {labelDecision.message}
-              </Text>
+              <View>
+                <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
+                  {`${BLOCKED_HEADLINE}. Fix the script:`}
+                </Text>
+                {labelDecision.rejected.map((rejection) => (
+                  <Text
+                    key={`${rejection.key}:${rejection.reason}`}
+                    style={{ color: theme.colors.statusDanger, fontSize: 12 }}
+                  >
+                    {describeRejection(rejection)}
+                  </Text>
+                ))}
+              </View>
             ) : null}
             {routeError ? (
               <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{routeError}</Text>
