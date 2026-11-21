@@ -481,6 +481,27 @@ describe("fallback rules", () => {
       error: "Fallback rules must end within 7 days.",
     });
   });
+
+  // `*<BOM>2026-...` reads as one word on screen; splitting on `\s` made it a wildcard rule with the
+  // repository as its note.
+  test.each([
+    ["a byte-order mark", cp(0xfeff)],
+    ["a no-break space", cp(0xa0)],
+    ["an ideographic space", cp(0x3000)],
+    ["a line separator", cp(0x2028)],
+  ])("%s between fields does not separate them", (_name, space) => {
+    expect(parseFallbackRuleInput(`*${space}${iso(DAY)} acme/api`, NOW)).toHaveProperty("error");
+    expect(parseFallbackRuleInput(`acme/api${space}${iso(DAY)}`, NOW)).toHaveProperty("error");
+  });
+
+  test("a tab separates fields, and a note with an invisible character is refused", () => {
+    expect(parseFallbackRuleInput(`acme/api\t${iso(DAY)}\tfix`, NOW)).toEqual({
+      rule: { repository: "acme/api", until: iso(DAY), note: "fix" },
+    });
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix${cp(0x202e)}it`, NOW)).toEqual({
+      error: "The note may not hold control or invisible characters.",
+    });
+  });
 });
 
 describe("a fallback rule never drops a downgrade label", () => {

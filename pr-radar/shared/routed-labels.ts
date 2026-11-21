@@ -472,7 +472,9 @@ export type ParsedFallbackRule = { rule: LabelFallbackRule } | { error: string }
 
 // "owner/name 2026-11-25T18:00Z optional note": the add-rule field in settings.
 export function parseFallbackRuleInput(input: string, now: number): ParsedFallbackRule {
-  const [repository, until, ...noteWords] = input.trim().split(/\s+/);
+  // Fields are separated by ASCII space or tab only, never `\s`: a U+FEFF or U+00A0 between two
+  // fields would split them where the screen shows one word.
+  const [repository, until, ...noteWords] = input.trim().split(/[ \t]+/);
   if (!repository || !until) {
     return {
       error:
@@ -480,6 +482,10 @@ export function parseFallbackRuleInput(input: string, now: number): ParsedFallba
     };
   }
   const note = noteWords.join(" ");
+  // The note is shown in the launch warning, so a bidi override in it could reorder that text.
+  if (UNSAFE_CHARS.test(note)) {
+    return { error: "The note may not hold control or invisible characters." };
+  }
   const parsed = LabelFallbackRuleSchema.safeParse({
     repository,
     until,
