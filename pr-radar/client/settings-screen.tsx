@@ -8,6 +8,7 @@ import {
   Loading,
   SettingsAction,
   SettingsCard,
+  SettingsInput,
   SettingsSection,
   SettingsSelect,
   useToast,
@@ -15,6 +16,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
+import { labelPrefixesProblem } from "../shared/routed-labels";
 import {
   type AutoLaunchMode,
   type CwdMode,
@@ -66,6 +68,8 @@ function ReadyPrRadarSettings({
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
   const [error, setError] = useState<string | null>(null);
+  // Remounts the prefix input after a reset: it only reads its initial value once.
+  const [prefixInputKey, setPrefixInputKey] = useState(0);
 
   const { profileOptions, providerOptions, modelOptions, modeOptions, contextModeOptions } =
     useAgentLaunchOptions();
@@ -149,6 +153,7 @@ function ReadyPrRadarSettings({
     setDirQueryText(DEFAULT_PR_RADAR_SETTINGS.sourceCodeDir);
     const saved = await savePatch({ ...DEFAULT_PR_RADAR_SETTINGS });
     if (saved) {
+      setPrefixInputKey((key) => key + 1);
       toast.show("PR Radar settings reset to defaults.", { variant: "success" });
     }
   }
@@ -267,6 +272,15 @@ function ReadyPrRadarSettings({
             options={routingScriptOptions}
             theme={theme}
             onSelect={(next) => void savePatch({ routingScriptPath: next })}
+          />
+          <SettingsInput
+            label="Allowed label prefixes"
+            hint="Routing script labels that one of these (comma or space separated) admits keep their name. A prefix admits itself, keys that continue it with . or / (ade.kind admits ade.kind.x, not ade.kinder), and every key under a prefix that ends in . or / (ade. admits ade.anything). Prefer the narrowest prefix, such as ade.kind. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
+            key={prefixInputKey}
+            error={labelPrefixesProblem(settings.values.routingLabelPrefixes)}
+            initialValue={settings.values.routingLabelPrefixes}
+            placeholder="None: all script labels go under pr-radar.route."
+            onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
           />
           <SettingsAction
             label="Reset settings"
