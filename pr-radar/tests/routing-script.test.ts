@@ -575,9 +575,11 @@ describe("runRoutingScriptHandler", () => {
     const root = makeRoot();
     const pidFile = join(root, "child-pid.txt");
     const script = writeScript(root, "spawner.sh", `sleep 60 &\necho $! > "${pidFile}"\nwait`);
+    // The timeout must outlast the shell's start-up on a busy machine: the script writes the
+    // descendant's pid before it can be timed out, and the test reads it only after the timeout.
     await expect(
-      route(script, {}, { timeoutMs: 400, outputBytes: 1024, killGraceMs: 200 }),
-    ).rejects.toThrow(/^Routing script timed out after \d{3}ms\.$/);
+      route(script, {}, { timeoutMs: 2_000, outputBytes: 1024, killGraceMs: 200 }),
+    ).rejects.toThrow(/^Routing script timed out after \d+ms\.$/);
     const descendant = Number(readFileSync(pidFile, "utf8").trim());
     await vi.waitFor(
       () => {
