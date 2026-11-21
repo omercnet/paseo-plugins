@@ -1,0 +1,360 @@
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
+import { applyAutoRouting, type LaunchDeps, launchNewAgent } from "../client/launch";
+import type { RadarRow } from "../client/radar";
+import type { StartAgentLaunchRequest } from "../client/start-agent-modal";
+import contribute from "../index.server";
+import { decideRoutedLabels, RoutedLabelsBlockedError } from "../shared/routed-labels";
+import {
+  migratePrRadarSettings,
+  type PrRadarSettings,
+  PrRadarSettingsSchema,
+} from "../shared/settings";
+import { type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
+
+function row(overrides: Partial<RadarRow> = {}): RadarRow {
+  return {
+    id: "acme/api#42",
+    number: 42,
+    url: "https://github.com/acme/api/pull/42",
+    title: "Fix checkout",
+    repository: "acme/api",
+    baseRefName: "main",
+    headRefName: "fix/checkout",
+    isDraft: false,
+    author: "mallory",
+    authorKind: "human",
+    isSecurity: false,
+    comments: 0,
+    labels: [],
+    changes: [],
+    linkedIssues: [],
+    cwdTag: "CWD-WORKTREE",
+    hasLocalPlace: true,
+    mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
+    checksStatus: "success",
+    reviewDecision: "approved",
+    checks: [],
+    workspaceIds: [],
+    localProjectRoot: "/work/api",
+    workspaceNames: [],
+    agents: [],
+    ownership: "mine",
+    reviewRequestedFromMe: false,
+    bucket: "waiting",
+    reason: "",
+    activityAt: null,
+    refreshedAt: null,
+    ...overrides,
+  };
+}
+
+interface Launch {
+  opened: string[];
+  prepared: string[];
+  created: { labels: Record<string, string>; title: string }[];
+  deps: LaunchDeps;
+}
+
+// A launch fake that records what reaches Paseo: the workspace it opens and the agent it creates.
+function fakeLaunch(settings: PrRadarSettings): Launch {
+  const launch: Launch = {
+    opened: [],
+    prepared: [],
+    created: [],
+    deps: {
+      paseo: {
+        workspaces: {
+          open: async (cwd) => {
+            launch.opened.push(cwd);
+            return {
+              agents: {
+                create: async (options) => {
+                  launch.created.push({ labels: options.labels, title: options.title });
+                  return { id: "agent-1" };
+                },
+              },
+            };
+          },
+        },
+        config: {
+          get: async () => ({
+            config: { agentProfiles: [{ name: "Model Router", provider: "claude" }] },
+          }),
+        },
+      },
+      prepareCwd: async (input) => {
+        launch.prepared.push(input.repository);
+        return { cwd: "/work/api-pr-42", cwdTag: "CWD-WORKTREE" };
+      },
+      policy: settings,
+    },
+  };
+  return launch;
+}
+
+interface Outcome {
+  launch: Launch;
+  launched: boolean;
+  message: string;
+}
+
+function settingsWith(values: Partial<PrRadarSettings> = {}): PrRadarSettings {
+  return PrRadarSettingsSchema.parse({ routingLabelPrefixes: "ade.", ...values });
+}
+
+function request(
+  overrides: StartAgentLaunchRequest["overrides"],
+  extra: Partial<StartAgentLaunchRequest> = {},
+) {
+  return {
+    row: row(),
+    targetDir: null,
+    cwdMode: "CWD-WORKTREE" as const,
+    worktreeName: null,
+    profileName: "Model Router",
+    overrides,
+    ...extra,
+  } satisfies StartAgentLaunchRequest;
+}
+
+async function run(
+  launch: Launch,
+  start: StartAgentLaunchRequest,
+): Promise<Pick<Outcome, "launched" | "message">> {
+  try {
+    const result = await launchNewAgent(launch.deps, start);
+    return { launched: true, message: result.message };
+  } catch (error) {
+    if (!(error instanceof RoutedLabelsBlockedError)) throw error;
+    return { launched: false, message: error.message };
+  }
+}
+
+// Auto-launch: the routing result is applied to the defaults, with no preview.
+async function viaAuto(settings: PrRadarSettings, routed: RoutingScriptResult): Promise<Outcome> {
+  const launch = fakeLaunch(settings);
+  const applied = applyAutoRouting({ settings, routed, profiles: [] });
+  if (applied.status === "blocked") return { launch, launched: false, message: applied.message };
+  const outcome = await run(
+    launch,
+    request(applied.overrides, {
+      profileName: applied.profileName,
+      routingWarning: applied.routingWarning,
+    }),
+  );
+  return { launch, ...outcome };
+}
+
+// Start New Agent modal: the preview disables Launch when the labels are blocked; otherwise the
+// request carries the routed labels as they came.
+async function viaModal(settings: PrRadarSettings, routed: RoutingScriptResult): Promise<Outcome> {
+  const launch = fakeLaunch(settings);
+  const preview = decideRoutedLabels({ labels: routed.labels, policy: settings });
+  if (preview.status === "blocked") return { launch, launched: false, message: preview.message };
+  const outcome = await run(launch, request({ labels: routed.labels }));
+  return { launch, ...outcome };
+}
+
+const PATHS = [
+  ["auto-launch", viaAuto],
+  ["start-agent modal", viaModal],
+] as const;
+
+describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
+  test("an allowed-prefix label keeps its name and pr-radar.cwd stays authoritative", async () => {
+    const outcome = await launchVia(settingsWith(), { labels: { "ade.kind": "external-review" } });
+    expect(outcome.launched).toBe(true);
+    expect(outcome.launch.created).toHaveLength(1);
+    expect(outcome.launch.created[0]?.labels).toEqual({
+      "ade.kind": "external-review",
+      "pr-radar.cwd": "CWD-WORKTREE",
+    });
+  });
+
+  test("a label outside the allowed prefixes is namespaced, also with an empty allow-list", async () => {
+    const labels = { team: "core", "ade.kind": "external-review" };
+    const partial = await launchVia(settingsWith(), { labels });
+    expect(partial.launch.created[0]?.labels).toEqual({
+      "pr-radar.route.team": "core",
+      "ade.kind": "external-review",
+      "pr-radar.cwd": "CWD-WORKTREE",
+    });
+    const none = await launchVia(settingsWith({ routingLabelPrefixes: "" }), { labels });
+    expect(none.launch.created[0]?.labels).toEqual({
+      "pr-radar.route.team": "core",
+      "pr-radar.route.ade.kind": "external-review",
+      "pr-radar.cwd": "CWD-WORKTREE",
+    });
+  });
+
+  test("no labels launches with only pr-radar.cwd", async () => {
+    const outcome = await launchVia(settingsWith(), {});
+    expect(outcome.launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
+  });
+
+  test.each([
+    [
+      "a paseo.* key",
+      { "paseo.parent-agent-id": "11111111-1111-4111-8111-111111111111" },
+      "paseo.parent-agent-id",
+    ],
+    ["a bare pr-radar key", { "pr-radar": "x" }, "pr-radar"],
+    ["a script-supplied pr-radar.cwd", { "pr-radar.cwd": "CWD-BASE" }, "pr-radar.cwd"],
+    ["a control character", { "ade.kind": "external\u0007review" }, "ade.kind"],
+    ["a C1 control", { "ade.kind": "external\u0085review" }, "ade.kind"],
+    ["a bidi override in a value", { "ade.kind": "‮external-review" }, "ade.kind"],
+    ["a zero-width character in a key", { "ade.ki​nd": "x" }, "ade.ki\\u{200B}nd"],
+    ["a non-string value", { "ade.kind": 1 }, "ade.kind"],
+    ["keys that collide after trimming", { "ade.kind": "a", " ade.kind": "b" }, "ade.kind"],
+  ])("blocks the launch for %s and names the key", async (_label, labels, shownKey) => {
+    const outcome = await launchVia(settingsWith(), { labels });
+    expect(outcome.launched).toBe(false);
+    expect(outcome.message).toContain("Launch blocked");
+    expect(outcome.message).toContain(shownKey);
+    expect(outcome.launch.prepared).toEqual([]);
+    expect(outcome.launch.opened).toEqual([]);
+    expect(outcome.launch.created).toEqual([]);
+  });
+
+  test("one bad label blocks every label, valid ones included", async () => {
+    const outcome = await launchVia(settingsWith(), {
+      labels: { "ade.kind": "external-review", "paseo.x": "y" },
+    });
+    expect(outcome.launched).toBe(false);
+    expect(outcome.launch.created).toEqual([]);
+  });
+});
+
+describe.each(PATHS)(
+  "settings saved with retired fallback rules, through %s",
+  (_name, launchVia) => {
+    const saved = {
+      routingLabelPrefixes: "ade.",
+      routingLabelFallbacks: [
+        { repository: "*", until: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString() },
+      ],
+    };
+
+    test("the strict schema refuses the stored document until it is migrated", () => {
+      expect(PrRadarSettingsSchema.safeParse(saved).success).toBe(false);
+    });
+
+    test("they load once migrated, and an active retired rule enables no fallback launch", async () => {
+      const settings = PrRadarSettingsSchema.parse(migratePrRadarSettings(saved));
+      expect(settings).not.toHaveProperty("routingLabelFallbacks");
+      const outcome = await launchVia(settings, {
+        labels: { "ade.kind": "external-review", "paseo.x": "y" },
+      });
+      expect(outcome.launched).toBe(false);
+      expect(outcome.launch.created).toEqual([]);
+    });
+  },
+);
+
+describe("the launch refuses bad labels even from a caller that skipped its own check", () => {
+  test("launchNewAgent throws before preparing a worktree", async () => {
+    const launch = fakeLaunch(settingsWith());
+    await expect(
+      launchNewAgent(launch.deps, request({ labels: { "paseo.parent-agent-id": "x" } })),
+    ).rejects.toBeInstanceOf(RoutedLabelsBlockedError);
+    expect(launch.prepared).toEqual([]);
+    expect(launch.created).toEqual([]);
+  });
+});
+
+describe("boundary: the registered routing handler to the launched agent", () => {
+  const dirs: string[] = [];
+  const stops: (() => void)[] = [];
+
+  afterEach(() => {
+    for (const stop of stops.splice(0)) stop();
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function registeredRoute(script: string, settings: PrRadarSettings) {
+    const handlers = new Map<
+      string,
+      (input: { payload: Record<string, unknown> }) => Promise<unknown>
+    >();
+    const server = {
+      registerSettings: () => ({
+        read: async () => ({ status: "ready", values: { ...settings, routingScriptPath: script } }),
+      }),
+      handle: (
+        rpc: { name: string },
+        handler: (input: { payload: Record<string, unknown> }) => Promise<unknown>,
+      ) => {
+        handlers.set(rpc.name, handler);
+      },
+    };
+    stops.push(contribute(server as never));
+    const handler = handlers.get(runRoutingScript.name);
+    if (!handler) throw new Error("pr-radar.run-routing-script was not registered");
+    return async () => runRoutingScript.output.parse(await handler({ payload: {} }));
+  }
+
+  function scriptPrinting(json: string): string {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "pr-radar-labels-")));
+    dirs.push(dir);
+    const path = join(dir, "route.sh");
+    writeFileSync(path, `#!/bin/sh\ncat > /dev/null\nprintf '%s' '${json}'\n`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  test("script labels reach the launched agent and pr-radar.cwd stays the workspace's own", async () => {
+    const settings = settingsWith();
+    const route = registeredRoute(
+      scriptPrinting('{"labels":{"ade.kind":"external-review","team":"core"},"reason":"x"}'),
+      settings,
+    );
+    const launch = fakeLaunch(settings);
+    const applied = applyAutoRouting({ settings, routed: await route(), profiles: [] });
+    expect(applied.status).toBe("launch");
+    if (applied.status !== "launch") return;
+    await launchNewAgent(launch.deps, request(applied.overrides));
+    expect(launch.created).toHaveLength(1);
+    expect(launch.created[0]?.labels).toEqual({
+      "ade.kind": "external-review",
+      "pr-radar.route.team": "core",
+      "pr-radar.cwd": "CWD-WORKTREE",
+    });
+  });
+
+  test("a script that tries to set pr-radar.cwd or a paseo.* label launches nothing", async () => {
+    const settings = settingsWith();
+    const route = registeredRoute(
+      scriptPrinting('{"labels":{"pr-radar.cwd":"CWD-BASE","paseo.parent-agent-id":"x"}}'),
+      settings,
+    );
+    const routed = await route();
+    expect(routed.labels).toEqual({ "pr-radar.cwd": "CWD-BASE", "paseo.parent-agent-id": "x" });
+    const launch = fakeLaunch(settings);
+    const applied = applyAutoRouting({ settings, routed, profiles: [] });
+    expect(applied.status).toBe("blocked");
+    await expect(launchNewAgent(launch.deps, request({ labels: routed.labels }))).rejects.toThrow(
+      /"pr-radar\.cwd": key is reserved.*"paseo\.parent-agent-id": key is reserved/,
+    );
+    expect(launch.created).toEqual([]);
+  });
+
+  test("a script labels value that is not a string map survives the handler and blocks the launch", async () => {
+    const settings = settingsWith();
+    const route = registeredRoute(
+      scriptPrinting('{"model":"m","labels":{"ade.kind":1}}'),
+      settings,
+    );
+    const routed = await route();
+    expect(routed.model).toBe("m");
+    expect(routed.labels).toEqual({ "ade.kind": 1 });
+    const applied = applyAutoRouting({ settings, routed, profiles: [] });
+    expect(applied).toMatchObject({ status: "blocked" });
+    expect(applied.status === "blocked" && applied.message).toContain(
+      `"ade.kind": value must be a string`,
+    );
+  });
+});

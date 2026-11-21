@@ -744,7 +744,7 @@ export function checkSummary(row: RadarRow): string {
   return passed === 1 ? "1 check passed" : `${passed} checks passed`;
 }
 
-type AgentProfileLike = {
+export type AgentProfileLike = {
   provider: string;
   model?: string;
   modeId?: string;
@@ -837,7 +837,7 @@ export function autoLaunchRequiresModal(
 
 const CWD_TAGS: readonly CwdTag[] = ["CWD-BASE", "CWD-WORKTREE", "CWD-TBD"];
 
-interface LabelableWorkspace {
+export interface LabelableWorkspace {
   // Workspaces before Paseo 0.16.0-beta.1 have no setLabel.
   setLabel?(label: string, options: { assigned: boolean }): unknown;
 }
@@ -912,6 +912,17 @@ export interface AgentLaunchOverrides {
   thinkingOptionId?: string;
   contextMode?: string;
   options?: Record<string, unknown>;
+  // Raw routing-script output; `decideRoutedLabels` validates it at launch.
+  labels?: unknown;
+}
+
+// Labels for a launched agent: the labels already accepted by `decideRoutedLabels` plus PR Radar's
+// own `pr-radar.cwd`, which a script can never set (the `pr-radar` keys are reserved).
+export function buildAgentLabels(
+  cwdTag: string,
+  accepted: Record<string, string> = {},
+): Record<string, string> {
+  return { ...accepted, "pr-radar.cwd": cwdTag };
 }
 
 export function buildAgentConfig(

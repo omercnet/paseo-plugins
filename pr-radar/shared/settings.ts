@@ -18,6 +18,7 @@ export const DEFAULT_PR_RADAR_SETTINGS = {
   defaultModeId: "",
   defaultContextMode: "",
   routingScriptPath: "",
+  routingLabelPrefixes: "",
 } as const;
 
 export const PrRadarSettingsSchema = z
@@ -55,14 +56,34 @@ export const PrRadarSettingsSchema = z
       .trim()
       .max(4_096)
       .default(DEFAULT_PR_RADAR_SETTINGS.routingScriptPath),
+    // Label key prefixes the routing script may use as-is, separated by commas or spaces (for
+    // example `ade.`). Every other script label is stored as `pr-radar.route.<key>`. Never admits
+    // `pr-radar`, `pr-radar.*`, `paseo` or `paseo.*`.
+    routingLabelPrefixes: z
+      .string()
+      .trim()
+      .max(1_024)
+      .default(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes),
   })
   .strict();
 
 export type PrRadarSettings = z.infer<typeof PrRadarSettingsSchema>;
 
+// Settings saved before label fallback rules moved out of the label feature may still hold
+// `routingLabelFallbacks`. The schema is strict, so the stored document must lose it before it is
+// parsed; a retired rule then enables nothing.
+const RETIRED_SETTINGS_KEYS = ["routingLabelFallbacks"] as const;
+
+export function migratePrRadarSettings(values: unknown): unknown {
+  if (typeof values !== "object" || values === null || Array.isArray(values)) return values;
+  const retired: readonly string[] = RETIRED_SETTINGS_KEYS;
+  return Object.fromEntries(Object.entries(values).filter(([key]) => !retired.includes(key)));
+}
+
 export const prRadarSettings = defineSettings({
   id: "pr-radar",
   scope: "host",
-  version: 1,
+  version: 2,
   schema: PrRadarSettingsSchema,
+  migrate: migratePrRadarSettings,
 });

@@ -3,6 +3,12 @@ import { Icon, Modal, TextInput } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import {
+  BLOCKED_HEADLINE,
+  decideRoutedLabels,
+  describeLabel,
+  describeRejection,
+} from "../shared/routed-labels";
 import type { CwdMode, PrRadarSettings } from "../shared/settings";
 import { listLocalDirs, type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 import { ComboSelect, useAgentLaunchOptions } from "./agent-launch-options";
@@ -83,7 +89,19 @@ export function StartAgentModal({
   const [routedOptions, setRoutedOptions] = useState<Record<string, unknown> | undefined>(
     undefined,
   );
+  const [routedLabels, setRoutedLabels] = useState<unknown>(undefined);
   const [routeReason, setRouteReason] = useState<string | null>(null);
+  // What the launch will do with the routing script's labels: apply them or refuse to start.
+  const labelDecision = useMemo(
+    () => decideRoutedLabels({ labels: routedLabels, policy: settings }),
+    [routedLabels, settings.routingLabelPrefixes],
+  );
+  const routedLabelText =
+    labelDecision.status === "ok"
+      ? Object.entries(labelDecision.labels)
+          .map(([key, value]) => describeLabel(key, value))
+          .join(", ")
+      : "";
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routingBusy, setRoutingBusy] = useState(false);
   const activeRowIdRef = useRef<string | null>(null);
@@ -111,6 +129,7 @@ export function StartAgentModal({
     setModeId(settings.defaultModeId);
     setContextMode(settings.defaultContextMode);
     setRoutedOptions(undefined);
+    setRoutedLabels(undefined);
     setRouteReason(null);
     setRouteError(null);
     setRoutingBusy(false);
@@ -137,6 +156,8 @@ export function StartAgentModal({
     const invocationSeq = ++routingSeqRef.current;
     setRoutingBusy(true);
     setRouteError(null);
+    setRoutedOptions(undefined);
+    setRoutedLabels(undefined);
     try {
       const result: RoutingScriptResult = await invokeRouter({
         payload: {
@@ -228,6 +249,7 @@ export function StartAgentModal({
         setContextMode(result.contextMode);
       }
       setRoutedOptions(restricted.options);
+      setRoutedLabels(result.labels);
       const ignoredNote =
         restricted.ignored.length > 0
           ? ` Ignored (not allowed): ${restricted.ignored.join(", ")}.`
@@ -552,6 +574,24 @@ export function StartAgentModal({
               ) : null}
             </View>
             {routeReason ? <Text style={styles.hint}>{routeReason}</Text> : null}
+            {routedLabelText ? (
+              <Text style={styles.hint}>{`Labels from routing script: ${routedLabelText}`}</Text>
+            ) : null}
+            {labelDecision.status === "blocked" ? (
+              <View>
+                <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
+                  {`${BLOCKED_HEADLINE}. Fix the script:`}
+                </Text>
+                {labelDecision.rejected.map((rejection) => (
+                  <Text
+                    key={`${rejection.key}:${rejection.reason}`}
+                    style={{ color: theme.colors.statusDanger, fontSize: 12 }}
+                  >
+                    {describeRejection(rejection)}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
             {routeError ? (
               <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{routeError}</Text>
             ) : null}
@@ -660,7 +700,7 @@ export function StartAgentModal({
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>
             <Pressable
-              disabled={pending || routingBusy}
+              disabled={pending || routingBusy || labelDecision.status === "blocked"}
               onPress={() =>
                 onStart({
                   row,
@@ -676,6 +716,7 @@ export function StartAgentModal({
                     modeId,
                     contextMode,
                     ...(routedOptions ? { options: routedOptions } : {}),
+                    ...(routedLabels === undefined ? {} : { labels: routedLabels }),
                   },
                 })
               }
