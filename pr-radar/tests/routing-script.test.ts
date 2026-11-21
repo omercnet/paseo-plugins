@@ -419,6 +419,26 @@ describe("runRoutingScriptHandler", () => {
       expect(await trustedScriptPath(uid, [entry, safeBin], settled)).toBe(safeBin);
     });
 
+    test("a failed walk does not vouch for the directories below the failure", async () => {
+      const { root, uid, settled } = setup();
+      const wide = join(root, "wide");
+      const real = join(wide, "real");
+      mkdirSync(join(real, "bin"), { recursive: true });
+      chmodSync(real, 0o755);
+      chmodSync(join(real, "bin"), 0o755);
+      chmodSync(wide, 0o775);
+      const links = join(root, "links");
+      mkdirSync(links);
+      chmodSync(links, 0o755);
+      const alias = join(links, "alias");
+      symlinkSync(join(real, "bin"), alias);
+      // wide/real/bin fails on its group-writable parent. The directories it passed on the way up
+      // (bin, real) must not be remembered as trusted, or the entries that reach them next would
+      // stop there and never see wide.
+      expect(await trustedScriptPath(uid, [join(real, "bin"), alias], settled)).toBe("");
+      expect(await trustedScriptPath(uid, [join(real, "bin"), real], settled)).toBe("");
+    });
+
     test("is kept when every link, its directory and the target's real parents are trusted", async () => {
       const { root, uid, settled, safeBin } = setup();
       const links = join(root, "links");

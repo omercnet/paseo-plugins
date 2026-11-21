@@ -89,6 +89,10 @@ async function assertTrustedDirectories(
   verified: Set<string>,
   allowSticky = true,
 ): Promise<void> {
+  // Remembered as trusted only once the whole walk has passed: a directory is trustworthy only if
+  // everything above it is, so one that sat below a failure must not vouch for a later walk that
+  // reaches it (say, through a link) and stops there.
+  const passed: string[] = [];
   for (let dir = await realpath(start); !verified.has(dir); dir = dirname(dir)) {
     const dirInfo = await stat(dir);
     if (!trustedOwner(dirInfo.uid)) {
@@ -101,9 +105,10 @@ async function assertTrustedDirectories(
         `Routing script directory ${dir} must not be writable by group or others; run chmod go-w on it.`,
       );
     }
-    verified.add(dir);
+    passed.push(dir);
     if (dirname(dir) === dir) break;
   }
+  for (const dir of passed) verified.add(dir);
 }
 
 // The kernel stops following links after this many (MAXSYMLINKS is 32 on macOS, 40 on Linux).
