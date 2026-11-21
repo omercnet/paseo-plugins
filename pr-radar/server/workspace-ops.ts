@@ -853,7 +853,21 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
     if (resolved) return resolved;
   }
   // One commit is checked and one is returned: another launch can move HEAD in between.
-  const head = await runGit(baseRoot, ["rev-parse", "--verify", "HEAD^{commit}"], 3_000);
+  // `--quiet` makes an unborn HEAD (no commit yet) exit 1 without a message; a timeout or any
+  // other failure still surfaces as itself.
+  const head = await runGit(
+    baseRoot,
+    ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    3_000,
+  ).catch((err: unknown) => {
+    if ((err as { code?: unknown } | null)?.code === 1) return "";
+    throw err;
+  });
+  if (!head) {
+    throw new Error(
+      `Base checkout ${baseRoot} has no recorded default branch for ${remote} and no commit checked out yet; run git remote set-head ${remote} --auto there, or make a first commit on the default branch.`,
+    );
+  }
   const branch = await currentBranch(baseRoot);
   if (branch?.startsWith("pr-radar/")) {
     throw new Error(
@@ -953,7 +967,7 @@ async function populateNewWorktree(baseRoot: string, worktreePath: string): Prom
   } catch (checkoutError) {
     try {
       // No short timeout: the cleanup must be allowed to finish.
-      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath]);
+      await runGit(baseRoot, ["worktree", "remove", "--force", "--", worktreePath]);
     } catch (removalError) {
       throw new AggregateError(
         [checkoutError, removalError],
@@ -967,27 +981,35 @@ async function populateNewWorktree(baseRoot: string, worktreePath: string): Prom
 /**
  * Launches whose workspace is being prepared right now, one entry per repository and item. Two
  * launches for the same item would race into the same clone, branch and worktree (a double click,
- * or two devices), so a second one is refused instead of queued: the queue stays empty, and the
- * first launch's result is what the user sees.
+ * or two devices), so a second identical request gets the running launch's promise and both see one
+ * result. A second request that differs (another directory or mode) is refused instead, since the
+ * running launch's result would not answer it.
  */
-const launchesInFlight = new Set<string>();
+const launchesInFlight = new Map<
+  string,
+  { signature: string; result: Promise<z.output<typeof prepareWorkspaceCwd.output>> }
+>();
 
-export async function prepareWorkspaceCwdHandler(
+export function prepareWorkspaceCwdHandler(
   input: z.output<typeof prepareWorkspaceCwd.input>,
   readSettings: ReadWorkspaceSettings,
 ): Promise<z.output<typeof prepareWorkspaceCwd.output>> {
   const launchKey = `${input.repository.toLowerCase()}#${input.itemKind}-${input.prNumber}`;
-  if (launchesInFlight.has(launchKey)) {
-    throw new Error(
-      `A launch for ${input.itemKind} #${input.prNumber} of ${input.repository} is already preparing its workspace; wait for it to finish, then try again.`,
+  const signature = JSON.stringify(input);
+  const running = launchesInFlight.get(launchKey);
+  if (running) {
+    if (running.signature === signature) return running.result;
+    return Promise.reject(
+      new Error(
+        `A launch for ${input.itemKind} #${input.prNumber} of ${input.repository} is already preparing its workspace with different settings; wait for it to finish, then try again.`,
+      ),
     );
   }
-  launchesInFlight.add(launchKey);
-  try {
-    return await prepareLockedWorkspaceCwd(input, readSettings);
-  } finally {
+  const result = prepareLockedWorkspaceCwd(input, readSettings).finally(() => {
     launchesInFlight.delete(launchKey);
-  }
+  });
+  launchesInFlight.set(launchKey, { signature, result });
+  return result;
 }
 
 async function prepareLockedWorkspaceCwd(

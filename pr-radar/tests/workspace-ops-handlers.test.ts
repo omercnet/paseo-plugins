@@ -1504,6 +1504,23 @@ describe("worktree creation failures", () => {
     expect(worktreeCount(repoDir)).toBe(2);
   });
 
+  test("passes the path after -- when it removes the half-created worktree", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const log = join(root, "remove-args.log");
+    stubGit(
+      root,
+      `case "$*" in *"worktree remove"*) echo "$*" >> '${log}';; esac\n${checkoutFails}`,
+    );
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/stub: checkout refused/);
+    const removals = readFileSync(log, "utf8").trim().split("\n");
+    expect(removals).toHaveLength(1);
+    expect(removals[0]).toMatch(/worktree remove --force -- \S*issue-12\S*$/);
+  });
+
   test("reports a failing branch lookup instead of calling the checkout detached", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
@@ -1549,22 +1566,54 @@ describe("a branch held by the base checkout", () => {
   });
 });
 
+describe("an issue launch from a checkout with no commits", () => {
+  test("says how to record the default branch instead of a raw rev-parse error", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    mkdirSync(repoDir, { recursive: true });
+    gitIn(repoDir, ["init", "-b", "main"]);
+    gitIn(repoDir, ["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+    const error = await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }),
+    ).catch((err: Error) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/no commit checked out yet/);
+    expect((error as Error).message).toMatch(/git remote set-head origin --auto/);
+    expect((error as Error).message).not.toMatch(/rev-parse/);
+  });
+});
+
 describe("concurrent launches", () => {
-  test("refuses a second launch of the same issue while the first prepares its workspace", async () => {
+  test("hands a second identical launch the running launch's result", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
     initRepo(repoDir, "git@github.com:owner/repo.git");
     const issue = request({ itemKind: "issue", prNumber: 12, targetDir: repoDir });
     const first = prepare(issue);
     const second = prepare(issue);
-    await expect(second).rejects.toThrow(/already preparing its workspace/);
+    // One run serves both clicks: the same promise, so the same result object.
+    expect(second).toBe(first);
     const result = await first;
+    expect(await second).toBe(result);
     expect(result.worktreeCreated).toBe(true);
 
-    // The lock is released, so a later launch reuses the finished worktree.
+    // The entry is released, so a later launch reuses the finished worktree.
     const later = await prepare(issue);
     expect(later.worktreeCreated).toBe(false);
     expect(later.cwd).toBe(result.cwd);
+  });
+
+  test("refuses a second launch of the same issue that asks for different settings", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const issue = request({ itemKind: "issue", prNumber: 12, targetDir: repoDir });
+    const first = prepare(issue);
+    const second = prepare({ ...issue, cwdMode: "CWD-BASE" });
+    await expect(second).rejects.toThrow(/already preparing its workspace with different settings/);
+    const result = await first;
+    expect(result.worktreeCreated).toBe(true);
+    expect(result.cwdTag).toBe("CWD-WORKTREE");
   });
 
   test("prepares the same issue number of two repositories at once", async () => {

@@ -479,6 +479,8 @@ interface Snapshot {
   reviewRequestedScope: string[];
   inboxItems: GitHubInboxItem[];
   issueItems: GitHubIssueItem[];
+  /** Every role whose search returned each issue; a row shows only the highest-ranked one. */
+  issueRoles: Map<string, Set<GitHubIssueItem["role"]>>;
   issueTruncated: boolean;
   issueSearchFailures: number;
   /** When each role's issue search last succeeded (ms); a role's kept issues age from here. */
@@ -518,11 +520,21 @@ async function fetchSnapshot(windowDays: number, previous?: Snapshot): Promise<S
     searchIssues("owner", viewer, since),
   ]);
   const issueMap = new Map<string, GitHubIssueItem>();
-  for (const record of ownedIssues.records) issueMap.set(record.id, toIssueItem(record, "owner"));
-  for (const record of assignedIssues.records)
-    issueMap.set(record.id, toIssueItem(record, "assignee"));
-  for (const record of authoredIssues.records)
-    issueMap.set(record.id, toIssueItem(record, "author"));
+  const issueRoles = new Map<string, Set<GitHubIssueItem["role"]>>();
+  const addRole = (id: string, role: GitHubIssueItem["role"]) => {
+    const roles = issueRoles.get(id) ?? new Set<GitHubIssueItem["role"]>();
+    issueRoles.set(id, roles.add(role));
+  };
+  for (const [role, result] of [
+    ["owner", ownedIssues],
+    ["assignee", assignedIssues],
+    ["author", authoredIssues],
+  ] as const) {
+    for (const record of result.records) {
+      issueMap.set(record.id, toIssueItem(record, role));
+      addRole(record.id, role);
+    }
+  }
   const searchedAt = Date.now();
   const kept = previous?.viewer === viewer ? previous : undefined;
   const searches = [
@@ -545,14 +557,25 @@ async function fetchSnapshot(windowDays: number, previous?: Snapshot): Promise<S
       }
     }
   }
+  // A kept row keeps every role it matched whose search failed. A role whose search succeeded
+  // without it has dropped it, but another failed role's search may still hold it.
   for (const item of kept?.issueItems ?? []) {
-    if (!keptRoles.has(item.role)) continue;
-    const fresh = issueMap.get(item.id);
-    if (!fresh) issueMap.set(item.id, item);
-    // Fresh fields win, but the kept row remembers a higher-ranked role whose search failed.
-    else if (ISSUE_ROLE_RANK[item.role] > ISSUE_ROLE_RANK[fresh.role]) {
-      issueMap.set(item.id, { ...fresh, role: item.role });
+    let held = false;
+    for (const role of kept?.issueRoles.get(item.id) ?? [item.role]) {
+      if (!keptRoles.has(role)) continue;
+      addRole(item.id, role);
+      held = true;
     }
+    // Fresh fields win over the kept row's.
+    if (held && !issueMap.has(item.id)) issueMap.set(item.id, item);
+  }
+  // The row shows the highest-ranked role among all that matched.
+  for (const [id, item] of issueMap) {
+    const roles = [...(issueRoles.get(id) ?? [item.role])];
+    const role = roles.reduce((best, next) =>
+      ISSUE_ROLE_RANK[next] > ISSUE_ROLE_RANK[best] ? next : best,
+    );
+    issueMap.set(id, { ...item, role });
   }
   const issueTruncated = Object.values(issueTruncatedBy).some(Boolean);
   const issueSearchFailures = [authoredIssues, assignedIssues, ownedIssues].filter(
@@ -618,6 +641,7 @@ async function fetchSnapshot(windowDays: number, previous?: Snapshot): Promise<S
     reviewRequestedScope,
     inboxItems,
     issueItems,
+    issueRoles,
     issueTruncated,
     issueSearchFailures,
     issueFreshAt,
