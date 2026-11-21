@@ -14,12 +14,13 @@ import {
   useToast,
 } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import {
   describeFallbackStatus,
   labelPrefixesProblem,
   parseFallbackRuleInput,
+  watchFallbackBoundary,
 } from "../shared/routed-labels";
 import {
   type AutoLaunchMode,
@@ -84,6 +85,16 @@ function ReadyPrRadarSettings({
   const [ruleText, setRuleText] = useState("");
   const [ruleError, setRuleError] = useState<string | null>(null);
   const [ruleInputKey, setRuleInputKey] = useState(0);
+  // The status line of each rule reads this clock, so a rule that ends (or comes within the seven
+  // day cap) while the screen is open changes its text without a reload.
+  const [ruleClock, setRuleClock] = useState(() => Date.now());
+  useEffect(
+    () =>
+      watchFallbackBoundary(settings.values.routingLabelFallbacks, ruleClock, () =>
+        setRuleClock(Date.now()),
+      ),
+    [settings.values.routingLabelFallbacks, ruleClock],
+  );
 
   const { profileOptions, providerOptions, modelOptions, modeOptions, contextModeOptions } =
     useAgentLaunchOptions();
@@ -312,7 +323,7 @@ function ReadyPrRadarSettings({
             <SettingsAction
               key={`${rule.repository}-${rule.until}-${rule.note ?? ""}`}
               label={`Label fallback: ${rule.repository}`}
-              hint={`${describeFallbackStatus(rule, Date.now())}${rule.note ? ` - ${rule.note}` : ""}`}
+              hint={`${describeFallbackStatus(rule, ruleClock)}${rule.note ? ` - ${rule.note}` : ""}`}
               actionLabel="Remove"
               onPress={() =>
                 void savePatch((latest) => ({
