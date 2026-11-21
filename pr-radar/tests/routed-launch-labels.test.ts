@@ -22,6 +22,9 @@ import {
 } from "../shared/settings";
 import { type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 
+const NOW = Date.parse("2026-11-20T12:00:00Z");
+const DAY = 24 * 60 * 60 * 1_000;
+
 function row(overrides: Partial<RadarRow> = {}): RadarRow {
   return {
     id: "acme/api#42",
@@ -99,6 +102,7 @@ function fakeLaunch(settings: PrRadarSettings): Launch {
         return { cwd: "/work/api-pr-42", cwdTag: "CWD-WORKTREE" };
       },
       policy: settings,
+      now: () => NOW,
     },
   };
   return launch;
@@ -145,7 +149,7 @@ async function run(
 // Auto-launch: the routing result is applied to the defaults, with no preview.
 async function viaAuto(settings: PrRadarSettings, routed: RoutingScriptResult): Promise<Outcome> {
   const launch = fakeLaunch(settings);
-  const applied = applyAutoRouting({ settings, routed, profiles: [] });
+  const applied = applyAutoRouting({ settings, routed, profiles: [], row: row(), now: NOW });
   if (applied.status === "blocked") return { launch, launched: false, message: applied.message };
   const outcome = await run(
     launch,
@@ -161,7 +165,12 @@ async function viaAuto(settings: PrRadarSettings, routed: RoutingScriptResult): 
 // request carries the routed labels as they came.
 async function viaModal(settings: PrRadarSettings, routed: RoutingScriptResult): Promise<Outcome> {
   const launch = fakeLaunch(settings);
-  const preview = decideRoutedLabels({ labels: routed.labels, policy: settings });
+  const preview = decideRoutedLabels({
+    labels: routed.labels,
+    repository: row().repository,
+    policy: settings,
+    now: NOW,
+  });
   if (preview.status === "blocked") return { launch, launched: false, message: preview.message };
   const outcome = await run(launch, request({ labels: routed.labels }));
   return { launch, ...outcome };
@@ -231,6 +240,44 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
   test("one bad label blocks every label, valid ones included", async () => {
     const outcome = await launchVia(settingsWith(), {
       labels: { "ade.kind": "external-review", "paseo.x": "y" },
+    });
+    expect(outcome.launched).toBe(false);
+    expect(outcome.launch.created).toEqual([]);
+  });
+
+  test("a matching unexpired fallback rule launches without any script labels and warns", async () => {
+    const settings = settingsWith({
+      routingLabelFallbacks: [
+        {
+          repository: "acme/api",
+          until: new Date(NOW + DAY).toISOString(),
+          note: "fixing route.py",
+        },
+      ],
+    });
+    const outcome = await launchVia(settings, {
+      labels: { "ade.kind": "external-review", "paseo.x": "y" },
+    });
+    expect(outcome.launched).toBe(true);
+    expect(outcome.launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
+    expect(outcome.message).toContain(`"paseo.x": key is reserved`);
+    expect(outcome.message).toContain("acme/api until");
+    expect(outcome.message).toContain("fixing route.py");
+  });
+
+  test.each([
+    ["expired", { repository: "acme/api", until: new Date(NOW - 1_000).toISOString() }],
+    [
+      "for another repository",
+      { repository: "acme/web", until: new Date(NOW + DAY).toISOString() },
+    ],
+    [
+      "more than 7 days out",
+      { repository: "acme/api", until: new Date(NOW + 8 * DAY).toISOString() },
+    ],
+  ])("a fallback rule that is %s does not unblock the launch", async (_why, rule) => {
+    const outcome = await launchVia(settingsWith({ routingLabelFallbacks: [rule] }), {
+      labels: { "paseo.x": "y" },
     });
     expect(outcome.launched).toBe(false);
     expect(outcome.launch.created).toEqual([]);
@@ -339,7 +386,13 @@ describe("boundary: the registered routing handler to the launched agent", () =>
       settings,
     );
     const launch = fakeLaunch(settings);
-    const applied = applyAutoRouting({ settings, routed: await route(), profiles: [] });
+    const applied = applyAutoRouting({
+      settings,
+      routed: await route(),
+      profiles: [],
+      row: row(),
+      now: NOW,
+    });
     expect(applied.status).toBe("launch");
     if (applied.status !== "launch") return;
     await launchNewAgent(launch.deps, request(applied.overrides));
@@ -360,7 +413,7 @@ describe("boundary: the registered routing handler to the launched agent", () =>
     const routed = await route();
     expect(routed.labels).toEqual({ "pr-radar.cwd": "CWD-BASE", "paseo.parent-agent-id": "x" });
     const launch = fakeLaunch(settings);
-    const applied = applyAutoRouting({ settings, routed, profiles: [] });
+    const applied = applyAutoRouting({ settings, routed, profiles: [], row: row(), now: NOW });
     expect(applied.status).toBe("blocked");
     await expect(launchNewAgent(launch.deps, request({ labels: routed.labels }))).rejects.toThrow(
       /"pr-radar\.cwd": key is reserved.*"paseo\.parent-agent-id": key is reserved/,
@@ -377,7 +430,7 @@ describe("boundary: the registered routing handler to the launched agent", () =>
     const routed = await route();
     expect(routed.model).toBe("m");
     expect(routed.labels).toEqual({ "ade.kind": 1 });
-    const applied = applyAutoRouting({ settings, routed, profiles: [] });
+    const applied = applyAutoRouting({ settings, routed, profiles: [], row: row(), now: NOW });
     expect(applied).toMatchObject({ status: "blocked" });
     expect(applied.status === "blocked" && applied.message).toContain(
       `"ade.kind": value must be a string`,
