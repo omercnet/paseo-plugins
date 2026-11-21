@@ -16,6 +16,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
+import { labelPrefixesProblem } from "../shared/routed-labels";
 import {
   type AutoLaunchMode,
   type CwdMode,
@@ -67,6 +68,7 @@ function ReadyPrRadarSettings({
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
   const [error, setError] = useState<string | null>(null);
+  const [prefixText, setPrefixText] = useState(settings.values.routingLabelPrefixes);
 
   const { profileOptions, providerOptions, modelOptions, modeOptions, contextModeOptions } =
     useAgentLaunchOptions();
@@ -272,9 +274,13 @@ function ReadyPrRadarSettings({
           <SettingsInput
             label="Allowed label prefixes"
             hint="Routing script labels that one of these (comma or space separated) admits keep their name. A prefix admits itself, keys that continue it with . or / (ade.kind admits ade.kind.x, not ade.kinder), and every key under a prefix that ends in . or / (ade. admits ade.anything). Prefer the narrowest prefix, such as ade.kind. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
+            error={labelPrefixesProblem(prefixText)}
             initialValue={settings.values.routingLabelPrefixes}
             placeholder="None: all script labels go under pr-radar.route."
-            onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
+            onChangeText={(next) => {
+              setPrefixText(next);
+              void savePatch({ routingLabelPrefixes: next });
+            }}
           />
           <SettingsAction
             label="Reset settings"

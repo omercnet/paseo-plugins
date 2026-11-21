@@ -4,6 +4,7 @@ import {
   decideRoutedLabels,
   describeLabel,
   displayLabelKey,
+  labelPrefixesProblem,
   MAX_LABEL_KEY_LEN,
   MAX_SCRIPT_LABELS,
   parseLabelPrefixes,
@@ -270,6 +271,35 @@ describe("parseLabelPrefixes", () => {
       "pr-radar.route.paseo/x": "1",
       "pr-radar.route.pr-radar-cwd": "2",
     });
+  });
+});
+
+describe("labelPrefixesProblem", () => {
+  test("is null for an empty setting and for usable entries", () => {
+    expect(labelPrefixesProblem("")).toBeNull();
+    expect(labelPrefixesProblem("  ")).toBeNull();
+    expect(labelPrefixesProblem("ade., team/ ,ade.kind")).toBeNull();
+  });
+
+  test("names the first bad entry and why, matching what parseLabelPrefixes voids", () => {
+    const cases: [string, string, string][] = [
+      ["ade., bad prefix!", '"prefix!"', "may only use letters"],
+      ["ade., paseo-", '"paseo-"', "reserved name"],
+      ["p", '"p"', "reserved name"],
+      ["ade., ../x", '"../x"', "may only use letters"],
+      ["k".repeat(MAX_LABEL_KEY_LEN + 1), '"kkkk', "longer than 128 characters"],
+    ];
+    for (const [raw, entry, why] of cases) {
+      const problem = labelPrefixesProblem(raw);
+      expect(problem).toContain(entry);
+      expect(problem).toContain(why);
+      expect(problem).toContain("Ignoring every prefix");
+      expect(parseLabelPrefixes(raw)).toEqual([]);
+    }
+  });
+
+  test("writes invisible characters in the bad entry out", () => {
+    expect(labelPrefixesProblem("ade.\u202e")).toContain("\\u{202E}");
   });
 });
 

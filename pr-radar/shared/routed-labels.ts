@@ -53,15 +53,38 @@ export class RoutedLabelsBlockedError extends Error {
 // could admit look-alikes of reserved keys. One malformed entry voids the whole setting, so a typo
 // can never widen a prefix: every script label then stays namespaced.
 export function parseLabelPrefixes(raw: string): string[] {
-  const prefixes = raw.split(/[\s,]+/).filter((prefix) => prefix.length > 0);
-  const usable = prefixes.every((prefix) => {
-    const lower = prefix.toLowerCase();
-    const nearReserved = RESERVED_ROOTS.some(
-      (root) => root.startsWith(lower) || lower.startsWith(root),
-    );
-    return prefix.length <= MAX_LABEL_KEY_LEN && LABEL_KEY.test(prefix) && !nearReserved;
-  });
-  return usable ? prefixes : [];
+  const prefixes = splitPrefixes(raw);
+  return prefixes.every((prefix) => prefixProblem(prefix) === null) ? prefixes : [];
+}
+
+function splitPrefixes(raw: string): string[] {
+  return raw.split(/[\s,]+/).filter((prefix) => prefix.length > 0);
+}
+
+function prefixProblem(prefix: string): string | null {
+  if (prefix.length > MAX_LABEL_KEY_LEN) {
+    return `is longer than ${MAX_LABEL_KEY_LEN} characters`;
+  }
+  if (!LABEL_KEY.test(prefix)) {
+    return "may only use letters, digits and . _ / - and must start with a letter or digit";
+  }
+  const lower = prefix.toLowerCase();
+  if (RESERVED_ROOTS.some((root) => root.startsWith(lower) || lower.startsWith(root))) {
+    return "is, or starts like, a reserved name (pr-radar, paseo)";
+  }
+  return null;
+}
+
+// Why the whole setting is void, naming the first bad entry; null when every entry is usable.
+// The settings screen shows it, so a typo does not silently turn every prefix off.
+export function labelPrefixesProblem(raw: string): string | null {
+  for (const prefix of splitPrefixes(raw)) {
+    const problem = prefixProblem(prefix);
+    if (problem) {
+      return `Ignoring every prefix: ${quoteLabelKey(prefix)} ${problem}. Fix or remove it.`;
+    }
+  }
+  return null;
 }
 
 // Keys shown in a notice come from the script, so control and invisible characters are written out.
