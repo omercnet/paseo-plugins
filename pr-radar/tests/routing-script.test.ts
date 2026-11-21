@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -10,6 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -645,8 +647,12 @@ describe("runRoutingScriptHandler", () => {
     const record = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", record);
     try {
+      // The settings read fails only when the test lets it, after the call has given up on it.
+      const release = Promise.withResolvers<void>();
+      const failed = Promise.withResolvers<void>();
       const failing = async () => {
-        await pause(20);
+        await release.promise;
+        failed.resolve();
         throw new Error("settings went away");
       };
       await expect(
@@ -656,7 +662,11 @@ describe("runRoutingScriptHandler", () => {
           killGraceMs: 100,
         }),
       ).rejects.toThrow(/took longer than the time budget/);
-      await pause(150);
+      release.resolve();
+      await failed.promise;
+      // Node reports an unhandled rejection once the microtask queue has drained after the turn in
+      // which it happened; a later macrotask has therefore seen it reported, had it been.
+      await new Promise((done) => setImmediate(done));
       expect(unhandled).toEqual([]);
     } finally {
       process.off("unhandledRejection", record);
@@ -742,20 +752,43 @@ describe("runRoutingScriptHandler", () => {
       );
     }
 
+    // A script that logs its start, then blocks until the test writes to the gate (a named pipe),
+    // then logs its end. Nothing about its length depends on the clock.
+    function makeGate(root: string): string {
+      const gate = join(root, "gate.fifo");
+      execFileSync("mkfifo", [gate]);
+      return gate;
+    }
+
+    async function openGate(gate: string): Promise<void> {
+      await writeFile(gate, "go\n");
+    }
+
+    function gated(root: string, name: string, log: string, gate: string): string {
+      return writeScript(
+        root,
+        `${name}.sh`,
+        `echo "start ${name}" >> "${log}"\ncat "${gate}" > /dev/null\necho "end ${name}" >> "${log}"\necho '{"reason":"${name}"}'`,
+      );
+    }
+
     test("runs a second call after the first, in order, and refuses a fourth", async () => {
       const root = makeRoot();
       const log = join(root, "log.txt");
-      const a = logging(root, "a", log, "0.8");
+      // A holds its turn until the test opens the gate, so B and C are queued and D is refused
+      // for as long as the test likes, not for as long as a sleep happens to last.
+      const gate = makeGate(root);
+      const a = gated(root, "a", log, gate);
       const b = logging(root, "b", log, "0.1");
       const c = logging(root, "c", log, "0.1");
       const d = logging(root, "d", log, "0.1");
       const first = route(a, {}, LONG);
       await vi.waitFor(() => expect(existsSync(log)).toBe(true));
+      // A call takes its place in line before its first await, so these are queued on return.
       const second = route(b, {}, LONG);
-      await pause(150);
       const third = route(c, {}, LONG);
-      await pause(150);
       await expect(route(d, {}, LONG)).rejects.toThrow(/already running/);
+      await openGate(gate);
       await expect(first).resolves.toEqual({ reason: "a" });
       await expect(second).resolves.toEqual({ reason: "b" });
       await expect(third).resolves.toEqual({ reason: "c" });
