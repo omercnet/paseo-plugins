@@ -231,7 +231,7 @@ export function checkRoutedLabels(raw: unknown, prefixes: readonly string[]): Ch
         ? `key collides with ${sharing
             .filter((other) => other !== entry.rawKey)
             .slice(0, 2)
-            .map(quoteLabelKey)
+            .map((other) => quoteLabelKey(other))
             .join(", ")} (both become ${entry.final})`
         : null;
     const problem = entry.problem ?? collision;
