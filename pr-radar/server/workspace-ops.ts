@@ -853,7 +853,21 @@ async function resolveIssueStartPoint(baseRoot: string, remote: string): Promise
     if (resolved) return resolved;
   }
   // One commit is checked and one is returned: another launch can move HEAD in between.
-  const head = await runGit(baseRoot, ["rev-parse", "--verify", "HEAD^{commit}"], 3_000);
+  // `--quiet` makes an unborn HEAD (no commit yet) exit 1 without a message; a timeout or any
+  // other failure still surfaces as itself.
+  const head = await runGit(
+    baseRoot,
+    ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    3_000,
+  ).catch((err: unknown) => {
+    if ((err as { code?: unknown } | null)?.code === 1) return "";
+    throw err;
+  });
+  if (!head) {
+    throw new Error(
+      `Base checkout ${baseRoot} has no recorded default branch for ${remote} and no commit checked out yet; run git remote set-head ${remote} --auto there, or make a first commit on the default branch.`,
+    );
+  }
   const branch = await currentBranch(baseRoot);
   if (branch?.startsWith("pr-radar/")) {
     throw new Error(

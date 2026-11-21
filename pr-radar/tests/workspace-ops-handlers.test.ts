@@ -1549,6 +1549,23 @@ describe("a branch held by the base checkout", () => {
   });
 });
 
+describe("an issue launch from a checkout with no commits", () => {
+  test("says how to record the default branch instead of a raw rev-parse error", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    mkdirSync(repoDir, { recursive: true });
+    gitIn(repoDir, ["init", "-b", "main"]);
+    gitIn(repoDir, ["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+    const error = await prepare(
+      request({ itemKind: "issue", prNumber: 12, targetDir: repoDir }),
+    ).catch((err: Error) => err);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/no commit checked out yet/);
+    expect((error as Error).message).toMatch(/git remote set-head origin --auto/);
+    expect((error as Error).message).not.toMatch(/rev-parse/);
+  });
+});
+
 describe("concurrent launches", () => {
   test("hands a second identical launch the running launch's result", async () => {
     const root = makeRoot();
