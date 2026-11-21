@@ -900,20 +900,26 @@ describe("runRoutingScriptHandler", () => {
     test("a queued call's script gets only what is left of its budget", async () => {
       const root = makeRoot();
       const log = join(root, "log.txt");
-      const slow = logging(root, "slow", log, "0.8");
+      const gate = makeGate(root);
+      const slow = gated(root, "slow", log, gate);
       const hang = writeScript(root, "hang.sh", "sleep 30");
       const limits = { timeoutMs: 1_200, outputBytes: 1024, killGraceMs: 200 };
-      const first = route(slow, {}, limits);
+      // The first script holds its turn until the test opens the gate and has all the time it
+      // needs, so a busy machine cannot time it out: only the second call's budget is measured.
+      const first = route(slow, {}, { ...limits, timeoutMs: 30_000 });
       await vi.waitFor(() => expect(existsSync(log)).toBe(true));
       const startedAt = Date.now();
       const second = route(hang, {}, limits);
+      // The second call spends part of its budget in line; that time has to pass.
+      await pause(400);
+      await openGate(gate);
       const failure = await second.then(
         () => null,
         (error: Error) => error,
       );
       expect(failure?.message).toMatch(/timed out after \d+ms/);
       const ranFor = Number(failure?.message.match(/after (\d+)ms/)?.[1]);
-      expect(ranFor).toBeLessThan(1_200);
+      expect(ranFor).toBeLessThan(900);
       // Unshortened the call would have run for its own 1.2 s after waiting for the first one.
       expect(Date.now() - startedAt).toBeLessThan(1_700);
       await first;
