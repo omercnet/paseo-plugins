@@ -467,8 +467,12 @@ describe("runRoutingScriptHandler", () => {
       outputBytes: 1024,
       killGraceMs: 100,
     });
-    await expect(hung).rejects.toThrow(/took longer than the time budget/);
-    await expect(route(quick, {}, FAST_LIMITS)).resolves.toEqual({});
+    const hungFailure = expect(hung).rejects.toThrow(/took longer than the time budget/);
+    // Started while the first call is still hung, so it waits behind it and must be let through
+    // when the first call gives up.
+    const next = route(quick, {}, FAST_LIMITS);
+    await hungFailure;
+    await expect(next).resolves.toEqual({});
   });
 
   test("work abandoned when the budget is already spent cannot raise an unhandled rejection", async () => {
