@@ -278,8 +278,10 @@ describe("boundary: the registered routing handler to the launched agent", () =>
   const dirs: string[] = [];
   const stops: (() => void | Promise<void>)[] = [];
 
-  afterEach(() => {
-    for (const stop of stops.splice(0)) stop();
+  afterEach(async () => {
+    // The plugin's cleanup ends a script that may still be running in one of these directories:
+    // wait for it to finish before the directories go.
+    for (const stop of stops.splice(0)) await stop();
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 

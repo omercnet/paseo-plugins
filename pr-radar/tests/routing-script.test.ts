@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -10,6 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -104,19 +106,49 @@ describe("runRoutingScriptHandler", () => {
     expect(JSON.parse(readFileSync(captured, "utf8"))).toEqual({ pr: 7 });
   });
 
-  test("refuses a payload over the input cap without running the script", async () => {
+  test("refuses a payload one byte over the input cap without running the script", async () => {
     const root = makeRoot();
     const ran = join(root, "ran.txt");
     const script = writeScript(root, "cap.sh", `echo ran > "${ran}"\ncat > /dev/null\necho '{}'`);
-    const limits = { ...FAST_LIMITS, inputBytes: 200 };
-    await expect(route(script, { pr: { body: "x".repeat(300) } }, limits)).rejects.toThrow(
-      /input is \d+ bytes, over the 200 byte limit/,
+    const cap = 200;
+    const limits = { ...FAST_LIMITS, inputBytes: cap };
+    // What the script is sent: the JSON text and a newline. Each payload below is built to a byte
+    // count, so the test sits on the boundary rather than somewhere safely either side of it.
+    const serialized = (payload: Record<string, unknown>) =>
+      Buffer.byteLength(`${JSON.stringify(payload)}\n`);
+    const overhead = serialized({ pr: "" });
+    const atCap = { pr: "x".repeat(cap - overhead) };
+    const overCap = { pr: "x".repeat(cap - overhead + 1) };
+    expect(serialized(atCap)).toBe(cap);
+    expect(serialized(overCap)).toBe(cap + 1);
+
+    await expect(route(script, overCap, limits)).rejects.toThrow(
+      `input is ${cap + 1} bytes, over the ${cap} byte limit`,
     );
     expect(existsSync(ran)).toBe(false);
-    // The refusal took no place in line, and a payload at the cap still goes through. A
-    // multi-byte character counts by its bytes, not its length.
-    await expect(route(script, { pr: "x".repeat(150) }, limits)).resolves.toEqual({});
-    await expect(route(script, { pr: "\u00e9".repeat(150) }, limits)).rejects.toThrow(/over the/);
+    // The refusal took no place in line, and a payload of exactly the cap goes through.
+    await expect(route(script, atCap, limits)).resolves.toEqual({});
+    expect(existsSync(ran)).toBe(true);
+  });
+
+  test("counts the input cap in bytes, so a multi-byte character spends two", async () => {
+    const root = makeRoot();
+    const script = writeScript(root, "cap2.sh", "cat > /dev/null\necho '{}'");
+    const cap = 200;
+    const limits = { ...FAST_LIMITS, inputBytes: cap };
+    const serialized = (payload: Record<string, unknown>) =>
+      Buffer.byteLength(`${JSON.stringify(payload)}\n`);
+    const overhead = serialized({ pr: "" });
+    // "\u00e9" is two bytes, so half the room holds as many characters as it takes to fill the cap.
+    const atCap = { pr: "\u00e9".repeat((cap - overhead) / 2) };
+    const overCap = { pr: `${atCap.pr}x` };
+    expect(serialized(atCap)).toBe(cap);
+    expect(serialized(overCap)).toBe(cap + 1);
+    expect(overCap.pr.length).toBeLessThan(cap);
+    await expect(route(script, atCap, limits)).resolves.toEqual({});
+    await expect(route(script, overCap, limits)).rejects.toThrow(
+      `input is ${cap + 1} bytes, over the ${cap} byte limit`,
+    );
   });
 
   test("sends a payload of 256 KiB whole when no cap is passed", async () => {
@@ -339,6 +371,43 @@ describe("runRoutingScriptHandler", () => {
     expect(seen).not.toContain(evil);
   });
 
+  test("refuses to run the script when no PATH directory is trusted", async () => {
+    const root = makeRoot();
+    const ran = join(root, "ran.txt");
+    const script = writeScript(root, "nopath.sh", `echo ran > "${ran}"\necho '{}'`);
+    const open = join(root, "open");
+    mkdirSync(open);
+    chmodSync(open, 0o777);
+    // Every candidate is missing or writable by others, so the kept PATH is the empty string.
+    const noneTrusted = { ...FAST_LIMITS, pathDirs: [open, join(root, "missing")] };
+    await expect(trustedScriptPath(undefined, noneTrusted.pathDirs)).resolves.toBe("");
+    await expect(route(script, {}, noneTrusted)).rejects.toThrow(
+      /None of the system directories the routing script searches for tools/,
+    );
+    expect(existsSync(ran)).toBe(false);
+    // The refused call passed its turn on: the next one runs normally.
+    await expect(route(script, {}, FAST_LIMITS)).resolves.toEqual({});
+    expect(existsSync(ran)).toBe(true);
+  });
+
+  test("never keeps a relative PATH entry", async () => {
+    // A relative entry is searched from the script's working directory, not from where it was read.
+    await expect(trustedScriptPath(undefined, ["bin", "./", "", "/usr/bin"])).resolves.toBe(
+      "/usr/bin",
+    );
+    await expect(trustedScriptPath(undefined, ["bin", "./", ""])).resolves.toBe("");
+  });
+
+  test("runs the script from a fixed directory, not the daemon's", async () => {
+    const root = makeRoot();
+    const cwdFile = join(root, "cwd.txt");
+    const script = writeScript(root, "cwd.sh", `pwd -P > "${cwdFile}"\necho '{}'`);
+    await route(script);
+    const seen = readFileSync(cwdFile, "utf8").trim();
+    expect(seen).toBe("/");
+    expect(seen).not.toBe(realpathSync(process.cwd()));
+  });
+
   test("drops a PATH directory that another user owns or can write", async () => {
     if (process.getuid?.() === 0) return;
     const otherUid = (process.getuid?.() ?? 0) + 1000;
@@ -514,9 +583,11 @@ describe("runRoutingScriptHandler", () => {
     const root = makeRoot();
     const pidFile = join(root, "child-pid.txt");
     const script = writeScript(root, "spawner.sh", `sleep 60 &\necho $! > "${pidFile}"\nwait`);
+    // The timeout must outlast the shell's start-up on a busy machine: the script writes the
+    // descendant's pid before it can be timed out, and the test reads it only after the timeout.
     await expect(
-      route(script, {}, { timeoutMs: 400, outputBytes: 1024, killGraceMs: 200 }),
-    ).rejects.toThrow(/^Routing script timed out after \d{3}ms\.$/);
+      route(script, {}, { timeoutMs: 2_000, outputBytes: 1024, killGraceMs: 200 }),
+    ).rejects.toThrow(/^Routing script timed out after \d+ms\.$/);
     const descendant = Number(readFileSync(pidFile, "utf8").trim());
     await vi.waitFor(
       () => {
@@ -586,8 +657,12 @@ describe("runRoutingScriptHandler", () => {
     const record = (reason: unknown) => unhandled.push(reason);
     process.on("unhandledRejection", record);
     try {
+      // The settings read fails only when the test lets it, after the call has given up on it.
+      const release = Promise.withResolvers<void>();
+      const failed = Promise.withResolvers<void>();
       const failing = async () => {
-        await pause(20);
+        await release.promise;
+        failed.resolve();
         throw new Error("settings went away");
       };
       await expect(
@@ -597,7 +672,11 @@ describe("runRoutingScriptHandler", () => {
           killGraceMs: 100,
         }),
       ).rejects.toThrow(/took longer than the time budget/);
-      await pause(150);
+      release.resolve();
+      await failed.promise;
+      // Node reports an unhandled rejection once the microtask queue has drained after the turn in
+      // which it happened; a later macrotask has therefore seen it reported, had it been.
+      await new Promise((done) => setImmediate(done));
       expect(unhandled).toEqual([]);
     } finally {
       process.off("unhandledRejection", record);
@@ -657,7 +736,8 @@ describe("runRoutingScriptHandler", () => {
       "stubborn2.sh",
       `echo $$ > "${pidFile}"\ntrap '' TERM\nwhile :; do sleep 0.05; done`,
     );
-    const first = route(stubborn, {}, { timeoutMs: 300, outputBytes: 1024, killGraceMs: 400 });
+    // The timeout is long enough for the script to have written its pid on a busy machine.
+    const first = route(stubborn, {}, { timeoutMs: 1_500, outputBytes: 1024, killGraceMs: 400 });
     const firstResult = expect(first).rejects.toThrow(/timed out/);
     await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
     // The next call queues behind the script that ignores SIGTERM and must not overlap it.
@@ -683,20 +763,43 @@ describe("runRoutingScriptHandler", () => {
       );
     }
 
+    // A script that logs its start, then blocks until the test writes to the gate (a named pipe),
+    // then logs its end. Nothing about its length depends on the clock.
+    function makeGate(root: string): string {
+      const gate = join(root, "gate.fifo");
+      execFileSync("mkfifo", [gate]);
+      return gate;
+    }
+
+    async function openGate(gate: string): Promise<void> {
+      await writeFile(gate, "go\n");
+    }
+
+    function gated(root: string, name: string, log: string, gate: string): string {
+      return writeScript(
+        root,
+        `${name}.sh`,
+        `echo "start ${name}" >> "${log}"\ncat "${gate}" > /dev/null\necho "end ${name}" >> "${log}"\necho '{"reason":"${name}"}'`,
+      );
+    }
+
     test("runs a second call after the first, in order, and refuses a fourth", async () => {
       const root = makeRoot();
       const log = join(root, "log.txt");
-      const a = logging(root, "a", log, "0.8");
+      // A holds its turn until the test opens the gate, so B and C are queued and D is refused
+      // for as long as the test likes, not for as long as a sleep happens to last.
+      const gate = makeGate(root);
+      const a = gated(root, "a", log, gate);
       const b = logging(root, "b", log, "0.1");
       const c = logging(root, "c", log, "0.1");
       const d = logging(root, "d", log, "0.1");
       const first = route(a, {}, LONG);
       await vi.waitFor(() => expect(existsSync(log)).toBe(true));
+      // A call takes its place in line before its first await, so these are queued on return.
       const second = route(b, {}, LONG);
-      await pause(150);
       const third = route(c, {}, LONG);
-      await pause(150);
       await expect(route(d, {}, LONG)).rejects.toThrow(/already running/);
+      await openGate(gate);
       await expect(first).resolves.toEqual({ reason: "a" });
       await expect(second).resolves.toEqual({ reason: "b" });
       await expect(third).resolves.toEqual({ reason: "c" });
@@ -749,13 +852,18 @@ describe("runRoutingScriptHandler", () => {
         "stubborn3.sh",
         `echo $$ > "${pidFile}"\ntrap '' TERM\nwhile :; do sleep 0.05; done`,
       );
-      // Killed 300 + 800 ms after it starts; the second call only has 500 ms in all.
-      const first = route(stubborn, {}, { timeoutMs: 300, outputBytes: 1024, killGraceMs: 800 });
+      // Killed 1.5 s + 1.5 s after it starts (the timeout is long enough for the script to have
+      // written its pid on a busy machine); the second call only has 1 s in all.
+      const first = route(
+        stubborn,
+        {},
+        { timeoutMs: 1_500, outputBytes: 1024, killGraceMs: 1_500 },
+      );
       const firstResult = expect(first).rejects.toThrow(/timed out/);
       await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
       const quick = writeScript(root, "quick2.sh", "echo '{}'");
       await expect(
-        route(quick, {}, { timeoutMs: 500, outputBytes: 1024, killGraceMs: 200 }),
+        route(quick, {}, { timeoutMs: 1_000, outputBytes: 1024, killGraceMs: 200 }),
       ).rejects.toThrow(/already running/);
       await firstResult;
       // The refused call left the queue without letting a later one overtake the stubborn script.
@@ -792,20 +900,26 @@ describe("runRoutingScriptHandler", () => {
     test("a queued call's script gets only what is left of its budget", async () => {
       const root = makeRoot();
       const log = join(root, "log.txt");
-      const slow = logging(root, "slow", log, "0.8");
+      const gate = makeGate(root);
+      const slow = gated(root, "slow", log, gate);
       const hang = writeScript(root, "hang.sh", "sleep 30");
       const limits = { timeoutMs: 1_200, outputBytes: 1024, killGraceMs: 200 };
-      const first = route(slow, {}, limits);
+      // The first script holds its turn until the test opens the gate and has all the time it
+      // needs, so a busy machine cannot time it out: only the second call's budget is measured.
+      const first = route(slow, {}, { ...limits, timeoutMs: 30_000 });
       await vi.waitFor(() => expect(existsSync(log)).toBe(true));
       const startedAt = Date.now();
       const second = route(hang, {}, limits);
+      // The second call spends part of its budget in line; that time has to pass.
+      await pause(400);
+      await openGate(gate);
       const failure = await second.then(
         () => null,
         (error: Error) => error,
       );
       expect(failure?.message).toMatch(/timed out after \d+ms/);
       const ranFor = Number(failure?.message.match(/after (\d+)ms/)?.[1]);
-      expect(ranFor).toBeLessThan(1_200);
+      expect(ranFor).toBeLessThan(900);
       // Unshortened the call would have run for its own 1.2 s after waiting for the first one.
       expect(Date.now() - startedAt).toBeLessThan(1_700);
       await first;
@@ -851,11 +965,12 @@ describe("runRoutingScriptHandler", () => {
         "stubborn-timeout.sh",
         `trap '' TERM\necho $$ > "${pidFile}"\nwhile :; do sleep 0.05; done`,
       );
-      // The timeout sends SIGTERM at 300 ms and would send SIGKILL 20 s later.
+      // The timeout sends SIGTERM at 2 s (long enough for the script to have written its pid on a
+      // busy machine) and would send SIGKILL 20 s later.
       const timedOut = route(
         stubborn,
         {},
-        { timeoutMs: 300, outputBytes: 1024, killGraceMs: 20_000 },
+        { timeoutMs: 2_000, outputBytes: 1024, killGraceMs: 20_000 },
       );
       await expect(timedOut).rejects.toThrow(/timed out/);
       const pid = Number(readFileSync(pidFile, "utf8").trim());
