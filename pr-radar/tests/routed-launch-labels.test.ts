@@ -253,6 +253,37 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
     expect(outcome.message).toContain("fixing route.py");
   });
 
+  test("an active fallback rule cannot drop a downgrade label: mixed and invalid-key sets", async () => {
+    const settings = settingsWith({
+      routingLabelPrefixes: "ade.kind",
+      routingLabelFallbacks: [
+        { repository: "acme/api", until: new Date(NOW + DAY).toISOString(), note: "fix" },
+      ],
+    });
+    for (const labels of [
+      { "ade.kind": "external-review", "paseo.x": "y" },
+      { "ade.kind": 1 },
+      "ade.kind=external-review",
+    ]) {
+      const outcome = await launchVia(settings, { labels });
+      expect(outcome.launched).toBe(false);
+      expect(outcome.message).toContain("cannot drop it");
+      expect(outcome.launch.prepared).toEqual([]);
+      expect(outcome.launch.opened).toEqual([]);
+      expect(outcome.launch.created).toEqual([]);
+    }
+  });
+
+  test("an active fallback rule still launches when no returned key is a downgrade label", async () => {
+    const settings = settingsWith({
+      routingLabelPrefixes: "ade.kind",
+      routingLabelFallbacks: [{ repository: "acme/api", until: new Date(NOW + DAY).toISOString() }],
+    });
+    const outcome = await launchVia(settings, { labels: { team: "core", "paseo.x": "y" } });
+    expect(outcome.launched).toBe(true);
+    expect(outcome.launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
+  });
+
   test.each([
     ["expired", { repository: "acme/api", until: new Date(NOW - 1_000).toISOString() }],
     [

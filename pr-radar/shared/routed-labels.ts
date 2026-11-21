@@ -43,7 +43,13 @@ export interface LabelPolicy {
 export type RoutedLabelsDecision =
   | { status: "ok"; labels: Record<string, string> }
   | { status: "fallback"; rejected: RejectedLabel[]; rule: LabelFallbackRule; warning: string }
-  | { status: "blocked"; rejected: RejectedLabel[]; message: string };
+  | {
+      status: "blocked";
+      rejected: RejectedLabel[];
+      message: string;
+      // Set when an active fallback rule was refused because it would drop a downgrade label.
+      fallbackRefusal?: string;
+    };
 
 export class RoutedLabelsBlockedError extends Error {
   readonly rejected: RejectedLabel[];
@@ -304,6 +310,25 @@ export function describeFallbackRule(rule: LabelFallbackRule): string {
   return `${rule.repository} until ${rule.until}${note}`;
 }
 
+// A downgrade label is one an operator trusted to keep its own name: an Allowed label prefix admits
+// it. A fallback rule skips every script label, so it must never apply to a set that holds one.
+// The guard is wider than the real check, so it fails closed: it reads the raw prefix entries (one
+// malformed entry voids the parsed list, which would otherwise let the fallback drop the label),
+// ignores case, and strips invisible characters before comparing. Blocking more is harmless.
+function downgradeRefusal(labels: unknown, rawPrefixes: string): string | null {
+  const prefixes = splitPrefixes(rawPrefixes).map((prefix) => prefix.toLowerCase());
+  if (prefixes.length === 0 || labels === undefined || labels === null) return null;
+  if (typeof labels !== "object" || Array.isArray(labels)) {
+    return "The labels are not an object of keys and values, so PR Radar cannot tell whether they hold a label an Allowed label prefix trusts, and a fallback rule cannot drop it.";
+  }
+  const held = Object.keys(labels).find((key) => {
+    const guarded = key.replace(ESCAPED_CHARS, "").trim().toLowerCase();
+    return prefixes.some((prefix) => admits(prefix, guarded));
+  });
+  if (held === undefined) return null;
+  return `The label ${quoteLabelKey(held)} is one an Allowed label prefix trusts, and a fallback rule cannot drop it.`;
+}
+
 export function decideRoutedLabels(input: {
   labels: unknown;
   repository: string;
@@ -316,6 +341,15 @@ export function decideRoutedLabels(input: {
 
   const listed = describeRejected(checked.rejected);
   const rule = activeFallbackRule(policy.routingLabelFallbacks, repository, now);
+  const refusal = rule ? downgradeRefusal(labels, policy.routingLabelPrefixes) : null;
+  if (rule && refusal) {
+    return {
+      status: "blocked",
+      rejected: checked.rejected,
+      fallbackRefusal: `${refusal} Fallback rule ${describeFallbackRule(rule)} does not apply. Fix the script.`,
+      message: `${BLOCKED_HEADLINE} (${listed}). ${refusal} Fallback rule ${describeFallbackRule(rule)} does not apply. Fix the script.`,
+    };
+  }
   if (rule) {
     return {
       status: "fallback",

@@ -468,3 +468,75 @@ describe("fallback rules", () => {
     });
   });
 });
+
+describe("a fallback rule never drops a downgrade label", () => {
+  const rules = [{ repository: "acme/api", until: iso(DAY) }];
+  const decideWith = (labels: unknown, prefixes: string) =>
+    decideRoutedLabels({
+      labels,
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: prefixes, routingLabelFallbacks: rules },
+      now: NOW,
+    });
+  const blockedBy = (labels: unknown, prefixes: string) => {
+    const decision = decideWith(labels, prefixes);
+    expect(decision.status).toBe("blocked");
+    return decision.status === "blocked" ? decision : null;
+  };
+
+  test("a valid downgrade label next to an invalid key blocks the launch and says why", () => {
+    const decision = blockedBy({ "ade.kind": "external-review", "x y": "1" }, "ade.kind");
+    expect(decision?.message).toContain(`"ade.kind"`);
+    expect(decision?.message).toContain("cannot drop it");
+    expect(decision?.fallbackRefusal).toContain(`"ade.kind"`);
+  });
+
+  test("the downgrade key can itself be the invalid one", () => {
+    expect(blockedBy({ "ade.kind": 1 }, "ade.kind")?.fallbackRefusal).toContain(`"ade.kind"`);
+    expect(blockedBy({ "ade.kind": "" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ "ade.kind": "bell\u0007" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ "ade.kind": "a", " ade.kind": "b" }, "ade.kind")).not.toBeNull();
+  });
+
+  test("the guard reads the raw prefixes, so one malformed entry does not let the label go", () => {
+    expect(parseLabelPrefixes("ade.kind, bad!")).toEqual([]);
+    expect(
+      blockedBy({ "ade.kind": "external-review", "x y": "1" }, "ade.kind, bad!"),
+    ).not.toBeNull();
+  });
+
+  test("case and invisible characters do not hide a downgrade key from the guard", () => {
+    expect(blockedBy({ "ADE.Kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ "​ade.kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ " ade.kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
+  });
+
+  test("a label set that is not an object blocks when a prefix is configured", () => {
+    for (const labels of ["ade.kind=external-review", ["ade.kind"], 7, true]) {
+      expect(blockedBy(labels, "ade.kind")?.fallbackRefusal).toContain("not an object");
+    }
+  });
+
+  test("a set of more than 64 keys is checked key by key", () => {
+    const many = Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`team${i}`, "v"]));
+    expect(decideWith(many, "ade.kind").status).toBe("fallback");
+    expect(blockedBy({ ...many, "ade.kind": "external-review" }, "ade.kind")).not.toBeNull();
+  });
+
+  test("the fallback still applies when no prefix admits any returned key", () => {
+    expect(decideWith({ "ade.kinder": "x", "x y": "1" }, "ade.kind").status).toBe("fallback");
+    expect(decideWith({ team: "core", "x y": "1" }, "ade.kind").status).toBe("fallback");
+    expect(decideWith({ "x y": "1" }, "").status).toBe("fallback");
+    expect(decideWith("not labels", "").status).toBe("fallback");
+  });
+
+  test("without an active rule the launch stays blocked, with no fallback refusal", () => {
+    const decision = decideRoutedLabels({
+      labels: { "ade.kind": "external-review", "x y": "1" },
+      repository: "acme/web",
+      policy: { routingLabelPrefixes: "ade.kind", routingLabelFallbacks: rules },
+      now: NOW,
+    });
+    expect(decision.status === "blocked" && decision.fallbackRefusal).toBeUndefined();
+  });
+});
