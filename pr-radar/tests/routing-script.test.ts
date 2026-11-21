@@ -392,7 +392,7 @@ describe("runRoutingScriptHandler", () => {
     );
     await expect(
       route(script, {}, { timeoutMs: 400, outputBytes: 1024, killGraceMs: 200 }),
-    ).rejects.toThrow("Routing script timed out after 400ms.");
+    ).rejects.toThrow(/^Routing script timed out after \d{3}ms\.$/);
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     await vi.waitFor(
       () => {
@@ -408,7 +408,7 @@ describe("runRoutingScriptHandler", () => {
     const script = writeScript(root, "spawner.sh", `sleep 60 &\necho $! > "${pidFile}"\nwait`);
     await expect(
       route(script, {}, { timeoutMs: 400, outputBytes: 1024, killGraceMs: 200 }),
-    ).rejects.toThrow("Routing script timed out after 400ms.");
+    ).rejects.toThrow(/^Routing script timed out after \d{3}ms\.$/);
     const descendant = Number(readFileSync(pidFile, "utf8").trim());
     await vi.waitFor(
       () => {
@@ -653,6 +653,28 @@ describe("runRoutingScriptHandler", () => {
         `if kill -0 "$(cat "${pidFile}")" 2>/dev/null; then echo '{"reason":"overlap"}'; else echo '{}'; fi`,
       );
       await expect(route(probe, {}, LONG)).resolves.toEqual({});
+    });
+
+    test("a first call's script gets only what is left after its own preflight", async () => {
+      const root = makeRoot();
+      const hang = writeScript(root, "hang-first.sh", "sleep 30");
+      const slowSettings = async () => {
+        await pause(600);
+        return { sourceCodeDir: "/nonexistent-source-dir", routingScriptPath: hang };
+      };
+      const startedAt = Date.now();
+      const failure = await runRoutingScriptHandler({ payload: {} }, slowSettings, {
+        timeoutMs: 1_000,
+        outputBytes: 1024,
+        killGraceMs: 200,
+      }).then(
+        () => null,
+        (error: Error) => error,
+      );
+      expect(failure?.message).toMatch(/timed out after \d+ms/);
+      expect(Number(failure?.message.match(/after (\d+)ms/)?.[1])).toBeLessThan(500);
+      // The host gives the whole call 1 s; untrimmed it would have run for 0.6 + 1 s.
+      expect(Date.now() - startedAt).toBeLessThan(1_300);
     });
 
     test("a queued call's script gets only what is left of its budget", async () => {
