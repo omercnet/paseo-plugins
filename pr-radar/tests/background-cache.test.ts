@@ -374,15 +374,18 @@ describe("background cache", () => {
     });
 
     test("one failed search keeps only the issues its role found", async () => {
-      // The mock answers every filter alike, so every issue lands in the highest-priority role.
-      gh.issues = JSON.stringify([issueRecord(1), issueRecord(2)]);
+      // Issue 1 comes from the author search alone; issue 2 from the author and owner searches.
+      gh.issuesByFlag = {
+        "--author=testuser": JSON.stringify([issueRecord(1), issueRecord(2)]),
+        "--owner=testuser": JSON.stringify([issueRecord(2)]),
+      };
       const first = await resolveViewerScope({ urls: [], windowDays: 30 });
       expect(first.issueItems?.map(({ role }) => role)).toEqual(["author", "author"]);
 
-      // Owner search fails; author and assignee succeed with one issue fewer. The author-role
-      // issue that is gone stays gone: the owner search never held it.
+      // Owner search fails; the author search succeeds with one issue fewer. The issue that is
+      // gone stays gone: the owner search never held it.
       gh.failIssueFlag = "--owner=testuser";
-      gh.issues = JSON.stringify([issueRecord(2)]);
+      gh.issuesByFlag = { "--author=testuser": JSON.stringify([issueRecord(2)]) };
       const answer = await refreshAgain();
       expect(issueNumbers(answer)).toEqual([2]);
       expect(answer.coverageNote).toMatch(/^1 GitHub issue search request failed/);
@@ -438,6 +441,30 @@ describe("background cache", () => {
       expect(answer.issueItems?.map(({ title, role }) => `${title}:${role}`)).toEqual([
         "new title:assignee",
       ]);
+    });
+
+    test("a kept issue remembers every role that matched, not just the displayed one", async () => {
+      // Matched by both the assignee and the owner search: shown as assigned.
+      gh.issuesByFlag = {
+        "--assignee=testuser": JSON.stringify([issueRecord(3)]),
+        "--owner=testuser": JSON.stringify([issueRecord(3)]),
+      };
+      const first = await resolveViewerScope({ urls: [], windowDays: 30 });
+      expect(first.issueItems?.map(({ role }) => role)).toEqual(["assignee"]);
+
+      // The owner search fails; the assignee search succeeds without the issue (it was unassigned).
+      // The failed owner search may still hold it, so it stays, now shown under the owner role.
+      gh.failIssueFlag = "--owner=testuser";
+      gh.issuesByFlag = {};
+      const second = await refreshAgain();
+      expect(second.issueItems?.map(({ number, role }) => `${number}:${role}`)).toEqual([
+        "3:owner",
+      ]);
+
+      // Once the owner search succeeds without it, the issue is gone.
+      gh.failIssueFlag = null;
+      const third = await refreshAgain();
+      expect(issueNumbers(third)).toEqual([]);
     });
 
     test("each role's kept issues expire on that role's own clock", async () => {
