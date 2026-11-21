@@ -736,7 +736,8 @@ describe("runRoutingScriptHandler", () => {
       "stubborn2.sh",
       `echo $$ > "${pidFile}"\ntrap '' TERM\nwhile :; do sleep 0.05; done`,
     );
-    const first = route(stubborn, {}, { timeoutMs: 300, outputBytes: 1024, killGraceMs: 400 });
+    // The timeout is long enough for the script to have written its pid on a busy machine.
+    const first = route(stubborn, {}, { timeoutMs: 1_500, outputBytes: 1024, killGraceMs: 400 });
     const firstResult = expect(first).rejects.toThrow(/timed out/);
     await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
     // The next call queues behind the script that ignores SIGTERM and must not overlap it.
@@ -851,13 +852,18 @@ describe("runRoutingScriptHandler", () => {
         "stubborn3.sh",
         `echo $$ > "${pidFile}"\ntrap '' TERM\nwhile :; do sleep 0.05; done`,
       );
-      // Killed 300 + 800 ms after it starts; the second call only has 500 ms in all.
-      const first = route(stubborn, {}, { timeoutMs: 300, outputBytes: 1024, killGraceMs: 800 });
+      // Killed 1.5 s + 1.5 s after it starts (the timeout is long enough for the script to have
+      // written its pid on a busy machine); the second call only has 1 s in all.
+      const first = route(
+        stubborn,
+        {},
+        { timeoutMs: 1_500, outputBytes: 1024, killGraceMs: 1_500 },
+      );
       const firstResult = expect(first).rejects.toThrow(/timed out/);
       await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
       const quick = writeScript(root, "quick2.sh", "echo '{}'");
       await expect(
-        route(quick, {}, { timeoutMs: 500, outputBytes: 1024, killGraceMs: 200 }),
+        route(quick, {}, { timeoutMs: 1_000, outputBytes: 1024, killGraceMs: 200 }),
       ).rejects.toThrow(/already running/);
       await firstResult;
       // The refused call left the queue without letting a later one overtake the stubborn script.
