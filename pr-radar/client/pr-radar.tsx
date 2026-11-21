@@ -241,10 +241,7 @@ export function PrRadar({
 
   const startNewAgentMutation = useMutation({
     mutationFn: async (request: StartAgentLaunchRequest) => {
-      const launched = await launchNewAgent(
-        { paseo, prepareCwd, policy: settings, now: Date.now },
-        request,
-      );
+      const launched = await launchNewAgent({ paseo, prepareCwd, policy: settings }, request);
       if (navigation) {
         navigation.openAgent({ agentId: launched.agentId, serverId: host.id });
       }
@@ -332,7 +329,7 @@ export function PrRadar({
             const profiles = routed.profile
               ? ((await paseo.config.get()).config.agentProfiles ?? [])
               : [];
-            const applied = applyAutoRouting({ settings, routed, profiles, row, now: Date.now() });
+            const applied = applyAutoRouting({ settings, routed, profiles });
             if (applied.status === "blocked") {
               setActionNotice(applied.message);
               return;

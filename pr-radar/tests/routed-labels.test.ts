@@ -1,21 +1,15 @@
 import { describe, expect, test } from "vitest";
 import {
-  activeFallbackRule,
   checkRoutedLabels,
   decideRoutedLabels,
   describeLabel,
   displayLabelKey,
   MAX_LABEL_KEY_LEN,
   MAX_SCRIPT_LABELS,
-  parseFallbackRuleInput,
   parseLabelPrefixes,
 } from "../shared/routed-labels";
-import type { LabelFallbackRule } from "../shared/settings";
 
 const ADE = ["ade."];
-const NOW = Date.parse("2026-11-20T12:00:00Z");
-const DAY = 24 * 60 * 60 * 1_000;
-const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
 
 function rejectedKeys(raw: unknown, prefixes: readonly string[] = ADE): string[] {
   return checkRoutedLabels(raw, prefixes).rejected.map(({ key }) => key);
@@ -269,9 +263,7 @@ describe("hostile label sets", () => {
     );
     const decision = decideRoutedLabels({
       labels: raw,
-      repository: "acme/api",
-      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
-      now: NOW,
+      policy: { routingLabelPrefixes: "" },
     });
     expect(decision.status).toBe("blocked");
     expect(decision.status === "blocked" && decision.message.length).toBeLessThan(600);
@@ -281,21 +273,17 @@ describe("hostile label sets", () => {
     const raw = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`paseo.k${i}`, "v"]));
     const decision = decideRoutedLabels({
       labels: raw,
-      repository: "acme/api",
-      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
-      now: NOW,
+      policy: { routingLabelPrefixes: "" },
     });
     expect(decision.status === "blocked" && decision.message).toContain("and 7 more");
     expect(decision.status === "blocked" && decision.message).not.toContain("paseo.k6");
   });
 
   test("a key cannot pass for a second sentence in the notice: it is quoted", () => {
-    const key = 'x") Fallback rule acme/api until 2099 lets this launch go ahead ("';
+    const key = 'x") Launch allowed ("';
     const decision = decideRoutedLabels({
       labels: { [key]: "v" },
-      repository: "acme/api",
-      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
-      now: NOW,
+      policy: { routingLabelPrefixes: "" },
     });
     expect(decision.status).toBe("blocked");
     expect(decision.status === "blocked" && decision.message).toContain('\\"');
@@ -308,88 +296,24 @@ describe("hostile label sets", () => {
   });
 });
 
-describe("fallback rules", () => {
-  const policy = (rules: LabelFallbackRule[]) => ({
-    routingLabelPrefixes: "ade.",
-    routingLabelFallbacks: rules,
-  });
-  const bad = { "pr-radar.cwd": "CWD-BASE", "ade.kind": "external-review" };
-  const decide = (rules: LabelFallbackRule[], repository = "acme/api") =>
-    decideRoutedLabels({ labels: bad, repository, policy: policy(rules), now: NOW });
+describe("decideRoutedLabels", () => {
+  const policy = { routingLabelPrefixes: "ade." };
 
-  test("blocked with no rule, naming every rejected key and reason", () => {
-    const decision = decide([]);
+  test("blocked with the rejected keys and reasons named, and no way out but fixing the script", () => {
+    const decision = decideRoutedLabels({
+      labels: { "pr-radar.cwd": "CWD-BASE", "ade.kind": "external-review" },
+      policy,
+    });
     expect(decision.status).toBe("blocked");
     if (decision.status !== "blocked") return;
     expect(decision.rejected).toHaveLength(1);
     expect(decision.message).toContain("Launch blocked");
     expect(decision.message).toContain(`"pr-radar.cwd": key is reserved`);
-    expect(decision.message).toContain("acme/api");
+    expect(decision.message).toContain("Fix the script");
   });
 
-  test("a matching unexpired rule lets the launch go ahead without any script labels", () => {
-    const rule = { repository: "acme/api", until: iso(DAY), note: "fixing route.py" };
-    const decision = decide([rule]);
-    expect(decision.status).toBe("fallback");
-    if (decision.status !== "fallback") return;
-    expect(decision.rule).toEqual(rule);
-    expect(decision.warning).toContain(`"pr-radar.cwd": key is reserved`);
-    expect(decision.warning).toContain(`acme/api until ${iso(DAY)} (fixing route.py)`);
-  });
-
-  test("the repository match ignores case; * matches every repository", () => {
-    expect(decide([{ repository: "ACME/Api", until: iso(DAY) }]).status).toBe("fallback");
-    expect(decide([{ repository: "*", until: iso(DAY) }], "other/repo").status).toBe("fallback");
-  });
-
-  test("blocked when the rule has expired", () => {
-    expect(decide([{ repository: "acme/api", until: iso(-1_000) }]).status).toBe("blocked");
-  });
-
-  test("blocked when the rule is for another repository", () => {
-    expect(decide([{ repository: "acme/web", until: iso(DAY) }]).status).toBe("blocked");
-  });
-
-  test("a rule whose date does not parse never counts as active", () => {
-    expect(
-      activeFallbackRule([{ repository: "*", until: "not a date" }], "a/b", NOW),
-    ).toBeUndefined();
-  });
-
-  test("a rule that ends more than 7 days out is refused, not clamped", () => {
-    expect(decide([{ repository: "acme/api", until: iso(7 * DAY + 1_000) }]).status).toBe(
-      "blocked",
-    );
-    expect(decide([{ repository: "acme/api", until: iso(7 * DAY - 1_000) }]).status).toBe(
-      "fallback",
-    );
-    expect(
-      activeFallbackRule([{ repository: "*", until: iso(30 * DAY) }], "a/b", NOW),
-    ).toBeUndefined();
-  });
-
-  test("valid labels never need a rule", () => {
-    const decision = decideRoutedLabels({
-      labels: { "ade.kind": "external-review" },
-      repository: "acme/api",
-      policy: policy([]),
-      now: NOW,
-    });
+  test("valid labels are applied", () => {
+    const decision = decideRoutedLabels({ labels: { "ade.kind": "external-review" }, policy });
     expect(decision).toEqual({ status: "ok", labels: { "ade.kind": "external-review" } });
-  });
-
-  test("the add-rule field refuses bad, expired and too-distant rules", () => {
-    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix the script`, NOW)).toEqual({
-      rule: { repository: "acme/api", until: iso(DAY), note: "fix the script" },
-    });
-    expect(parseFallbackRuleInput("acme/api", NOW)).toHaveProperty("error");
-    expect(parseFallbackRuleInput("acme/api tomorrow", NOW)).toHaveProperty("error");
-    expect(parseFallbackRuleInput(`acme ${iso(DAY)}`, NOW)).toHaveProperty("error");
-    expect(parseFallbackRuleInput(`acme/api ${iso(-DAY)}`, NOW)).toEqual({
-      error: "That time has already passed.",
-    });
-    expect(parseFallbackRuleInput(`acme/api ${iso(8 * DAY)}`, NOW)).toEqual({
-      error: "Fallback rules must end within 7 days.",
-    });
   });
 });

@@ -14,7 +14,6 @@ import {
   type CwdTag,
   type LabelableWorkspace,
   labelWorkspaceCwd,
-  type RadarRow,
   restrictRoutedLaunch,
   routedProviderModel,
   vetRoutedProfile,
@@ -61,7 +60,6 @@ export interface LaunchDeps {
   paseo: LaunchPaseo;
   prepareCwd(input: PrepareCwdInput): Promise<PreparedCwd>;
   policy: LabelPolicy;
-  now(): number;
 }
 
 export interface LaunchedAgent {
@@ -84,9 +82,7 @@ export async function launchNewAgent(
   }
   const decision = decideRoutedLabels({
     labels: request.overrides.labels,
-    repository: row.repository,
     policy: deps.policy,
-    now: deps.now(),
   });
   if (decision.status === "blocked") {
     throw new RoutedLabelsBlockedError(decision.message, decision.rejected);
@@ -117,17 +113,15 @@ export async function launchNewAgent(
     profiles.find((candidate) => candidate.name.toLowerCase() === "model router") ??
     profiles[0];
 
-  const accepted = decision.status === "ok" ? decision.labels : {};
   const created = await targetWorkspace.agents.create({
     config: buildAgentConfig(profile, request.overrides),
     title: `PR Radar: ${row.repository}#${row.number}`,
     prompt: buildAgentPrompt(row),
-    labels: buildAgentLabels(prepared.cwdTag, accepted),
+    labels: buildAgentLabels(prepared.cwdTag, decision.labels),
   });
 
   const baseMsg = `Started new agent in ${prepared.cwdTag} (${prepared.cwd}) for ${row.repository}#${row.number}.`;
-  const fallbackWarning = decision.status === "fallback" ? decision.warning : undefined;
-  const warnings = [request.routingWarning, fallbackWarning, prepared.warning].filter(Boolean);
+  const warnings = [request.routingWarning, prepared.warning].filter(Boolean);
   return {
     agentId: created.id,
     message: warnings.length > 0 ? `${warnings.join(" ")} ${baseMsg}` : baseMsg,
@@ -149,8 +143,6 @@ export interface AutoRoutingInput {
   routed: RoutingScriptResult;
   // Agent profiles from Paseo; only read when the script names a profile.
   profiles: readonly LaunchProfile[];
-  row: Pick<RadarRow, "repository">;
-  now: number;
 }
 
 export type AutoRouting =
@@ -167,13 +159,8 @@ export type AutoRouting =
  * label set PR Radar rejects stops the launch here instead of reaching the agent.
  */
 export function applyAutoRouting(input: AutoRoutingInput): AutoRouting {
-  const { settings, routed, profiles, row, now } = input;
-  const decision = decideRoutedLabels({
-    labels: routed.labels,
-    repository: row.repository,
-    policy: settings,
-    now,
-  });
+  const { settings, routed, profiles } = input;
+  const decision = decideRoutedLabels({ labels: routed.labels, policy: settings });
   if (decision.status === "blocked") return { status: "blocked", message: decision.message };
 
   let overrides = defaultLaunchOverrides(settings);

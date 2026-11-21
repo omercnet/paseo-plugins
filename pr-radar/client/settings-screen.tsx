@@ -16,12 +16,10 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
-import { describeFallbackStatus, parseFallbackRuleInput } from "../shared/routed-labels";
 import {
   type AutoLaunchMode,
   type CwdMode,
   DEFAULT_PR_RADAR_SETTINGS,
-  type PrRadarSettings,
   PrRadarSettingsSchema,
   prRadarSettings,
 } from "../shared/settings";
@@ -33,12 +31,6 @@ import {
   EFFORT_OPTIONS,
   useAgentLaunchOptions,
 } from "./agent-launch-options";
-import {
-  createSettingsSaveQueue,
-  fallbackRuleAdder,
-  removeFallbackRule,
-  type SettingsPatch,
-} from "./settings-save";
 
 type ReadySettings = Extract<SettingsState<typeof prRadarSettings.schema>, { status: "ready" }>;
 
@@ -75,9 +67,6 @@ function ReadyPrRadarSettings({
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
   const [error, setError] = useState<string | null>(null);
-  const [ruleText, setRuleText] = useState("");
-  const [ruleError, setRuleError] = useState<string | null>(null);
-  const [ruleInputKey, setRuleInputKey] = useState(0);
 
   const { profileOptions, providerOptions, modelOptions, modeOptions, contextModeOptions } =
     useAgentLaunchOptions();
@@ -119,54 +108,42 @@ function ReadyPrRadarSettings({
     values: settings.values,
     revision: settings.revision,
   };
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
-  const [saveQueue] = useState(() =>
-    createSettingsSaveQueue<PrRadarSettings>({
-      latest: () => latestSettingsRef.current,
-      remember: (values) => {
-        latestSettingsRef.current = { values, revision: latestSettingsRef.current.revision };
-      },
-      parse: (values) => {
-        const parsed = PrRadarSettingsSchema.safeParse(values);
-        return parsed.success
-          ? { success: true, data: parsed.data }
-          : {
-              success: false,
-              message: parsed.error.issues[0]?.message ?? "Invalid setting value.",
-            };
-      },
-      write: (values, revision) => settingsRef.current.save(values, revision),
-      report: setError,
-    }),
-  );
+  const queuedPatchRef = useRef<Partial<typeof settings.values> | null>(null);
+  const saveChainRef = useRef<Promise<boolean>>(Promise.resolve(true));
 
-  // A plain patch replaces fields; a function patch is applied to the newest saved document, so
-  // list edits (fallback rules) never build on a list that an in-flight save already changed.
-  function savePatch(patch: SettingsPatch<PrRadarSettings>): Promise<boolean> {
-    return saveQueue(patch);
-  }
-
-  async function handleAddRule() {
-    const parsedRule = parseFallbackRuleInput(ruleText, Date.now());
-    if ("error" in parsedRule) {
-      setRuleError(parsedRule.error);
-      return;
-    }
-    setRuleError(null);
-    // Whether the rule is already listed is decided inside the save queue, on the list that holds
-    // every edit queued before this one, not on the rendered settings (which lag a pending save).
-    const adder = fallbackRuleAdder(parsedRule.rule);
-    const saved = await savePatch(adder.patch);
-    if (!saved) return;
-    if (adder.wasDuplicate()) {
-      setRuleError(
-        "A rule for this repository and end time already exists. Remove it first to change its note.",
-      );
-      return;
-    }
-    setRuleText("");
-    setRuleInputKey((key) => key + 1);
+  async function savePatch(patch: Partial<typeof settings.values>): Promise<boolean> {
+    queuedPatchRef.current = { ...(queuedPatchRef.current ?? {}), ...patch };
+    const run = saveChainRef.current.then(async () => {
+      const nextPatch = queuedPatchRef.current;
+      if (!nextPatch) return true;
+      queuedPatchRef.current = null;
+      setError(null);
+      const parsed = PrRadarSettingsSchema.safeParse({
+        ...latestSettingsRef.current.values,
+        ...nextPatch,
+      });
+      if (!parsed.success) {
+        setError(parsed.error.issues[0]?.message ?? "Invalid setting value.");
+        return false;
+      }
+      try {
+        const saved = await settings.save(parsed.data, latestSettingsRef.current.revision);
+        if (saved === false) {
+          setError("Settings changed concurrently; please retry.");
+          return false;
+        }
+        latestSettingsRef.current = {
+          values: parsed.data,
+          revision: latestSettingsRef.current.revision,
+        };
+        return true;
+      } catch (updateError) {
+        setError(updateError instanceof Error ? updateError.message : "Could not save settings.");
+        return false;
+      }
+    });
+    saveChainRef.current = run.catch(() => false);
+    return run;
   }
 
   async function handleReset() {
@@ -298,33 +275,6 @@ function ReadyPrRadarSettings({
             initialValue={settings.values.routingLabelPrefixes}
             placeholder="None: all script labels go under pr-radar.route."
             onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
-          />
-          {settings.values.routingLabelFallbacks.map((rule) => (
-            <SettingsAction
-              key={`${rule.repository}-${rule.until}-${rule.note ?? ""}`}
-              label={`Label fallback: ${rule.repository}`}
-              hint={`${describeFallbackStatus(rule, Date.now())}${rule.note ? ` - ${rule.note}` : ""}`}
-              actionLabel="Remove"
-              onPress={() =>
-                void savePatch((latest) => ({
-                  routingLabelFallbacks: removeFallbackRule(latest.routingLabelFallbacks, rule),
-                }))
-              }
-            />
-          ))}
-          <SettingsInput
-            key={ruleInputKey}
-            label="Add temporary label fallback"
-            hint="owner/name (or *), an ISO-8601 end time within 7 days, then an optional note, e.g. acme/api 2026-11-25T18:00Z fixing the script. While a rule is active, invalid routing script labels are skipped with a warning instead of blocking the launch."
-            error={ruleError}
-            initialValue=""
-            placeholder="owner/name 2026-11-25T18:00Z note"
-            onChangeText={setRuleText}
-          />
-          <SettingsAction
-            label="Add fallback rule"
-            actionLabel="Add rule"
-            onPress={() => void handleAddRule()}
           />
           <SettingsAction
             label="Reset settings"

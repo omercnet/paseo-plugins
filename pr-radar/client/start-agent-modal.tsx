@@ -86,18 +86,10 @@ export function StartAgentModal({
   );
   const [routedLabels, setRoutedLabels] = useState<unknown>(undefined);
   const [routeReason, setRouteReason] = useState<string | null>(null);
-  // What the launch will do with the routing script's labels: apply them, skip them under a
-  // fallback rule, or refuse to start.
-  const repository = row?.repository ?? "";
+  // What the launch will do with the routing script's labels: apply them or refuse to start.
   const labelDecision = useMemo(
-    () =>
-      decideRoutedLabels({
-        labels: routedLabels,
-        repository,
-        policy: settings,
-        now: Date.now(),
-      }),
-    [routedLabels, repository, settings.routingLabelPrefixes, settings.routingLabelFallbacks],
+    () => decideRoutedLabels({ labels: routedLabels, policy: settings }),
+    [routedLabels, settings.routingLabelPrefixes],
   );
   const routedLabelText =
     labelDecision.status === "ok"
@@ -584,9 +576,6 @@ export function StartAgentModal({
               <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
                 {labelDecision.message}
               </Text>
-            ) : null}
-            {labelDecision.status === "fallback" ? (
-              <Text style={styles.hint}>{labelDecision.warning}</Text>
             ) : null}
             {routeError ? (
               <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{routeError}</Text>
