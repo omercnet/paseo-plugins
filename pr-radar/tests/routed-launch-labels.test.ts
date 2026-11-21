@@ -255,9 +255,7 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
         },
       ],
     });
-    const outcome = await launchVia(settings, {
-      labels: { "ade.kind": "external-review", "paseo.x": "y" },
-    });
+    const outcome = await launchVia(settings, { labels: { team: "core", "paseo.x": "y" } });
     expect(outcome.launched).toBe(true);
     expect(outcome.launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
     expect(outcome.message).toContain(`"paseo.x": key is reserved`);
@@ -327,31 +325,20 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
   });
 });
 
-describe.each(PATHS)(
-  "settings saved with retired fallback rules, through %s",
-  (_name, launchVia) => {
-    const saved = {
-      routingLabelPrefixes: "ade.",
-      routingLabelFallbacks: [
-        { repository: "*", until: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString() },
-      ],
-    };
-
-    test("the strict schema refuses the stored document until it is migrated", () => {
-      expect(PrRadarSettingsSchema.safeParse(saved).success).toBe(false);
+describe.each(PATHS)("settings saved by the label-only version, through %s", (_name, launchVia) => {
+  // Version 2 documents carry no fallback field, so no rule is active after they load.
+  test("they load with no rule and a rejected label set still blocks", async () => {
+    const settings = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ routingLabelPrefixes: "ade." }),
+    );
+    expect(settings.routingLabelFallbacks).toEqual([]);
+    const outcome = await launchVia(settings, {
+      labels: { "ade.kind": "external-review", "paseo.x": "y" },
     });
-
-    test("they load once migrated, and an active retired rule enables no fallback launch", async () => {
-      const settings = PrRadarSettingsSchema.parse(migratePrRadarSettings(saved));
-      expect(settings).not.toHaveProperty("routingLabelFallbacks");
-      const outcome = await launchVia(settings, {
-        labels: { "ade.kind": "external-review", "paseo.x": "y" },
-      });
-      expect(outcome.launched).toBe(false);
-      expect(outcome.launch.created).toEqual([]);
-    });
-  },
-);
+    expect(outcome.launched).toBe(false);
+    expect(outcome.launch.created).toEqual([]);
+  });
+});
 
 describe("the launch refuses bad labels even from a caller that skipped its own check", () => {
   test("launchNewAgent throws before preparing a worktree", async () => {

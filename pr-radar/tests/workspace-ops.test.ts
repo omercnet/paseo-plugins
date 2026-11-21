@@ -30,20 +30,24 @@ import {
 import { RoutingScriptResultSchema } from "../shared/viewer-scope";
 
 describe("settings schema", () => {
-  test("migration drops retired keys and keeps every other value", () => {
-    const migrated = migratePrRadarSettings({
-      sourceCodeDir: "~/code",
-      routingLabelPrefixes: "ade.kind",
-      routingLabelFallbacks: [{ repository: "*", until: "2099-01-01T00:00Z" }],
-    });
-    expect(migrated).toEqual({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" });
-    expect(PrRadarSettingsSchema.parse(migrated).routingLabelPrefixes).toBe("ade.kind");
-    expect(migratePrRadarSettings("not an object")).toBe("not an object");
-    expect(migratePrRadarSettings(null)).toBeNull();
+  test("a document saved by the label-only version loads with no fallback rule", () => {
+    const parsed = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" }),
+    );
+    expect(parsed.routingLabelFallbacks).toEqual([]);
+    expect(parsed.routingLabelPrefixes).toBe("ade.kind");
   });
 
-  test("the saved settings document is version 2 and migrates older ones", () => {
-    expect(prRadarSettings.version).toBe(2);
+  test("a document saved with fallback rules keeps them through migration", () => {
+    const rule = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
+    const parsed = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ routingLabelFallbacks: [rule] }),
+    );
+    expect(parsed.routingLabelFallbacks).toEqual([rule]);
+  });
+
+  test("the saved settings document is version 3 and migrates older ones", () => {
+    expect(prRadarSettings.version).toBe(3);
     expect(prRadarSettings.migrate).toBe(migratePrRadarSettings);
   });
 

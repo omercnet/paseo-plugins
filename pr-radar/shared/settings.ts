@@ -98,21 +98,17 @@ export const PrRadarSettingsSchema = z
 
 export type PrRadarSettings = z.infer<typeof PrRadarSettingsSchema>;
 
-// Settings saved before label fallback rules moved out of the label feature may still hold
-// `routingLabelFallbacks`. The schema is strict, so the stored document must lose it before it is
-// parsed; a retired rule then enables nothing.
-const RETIRED_SETTINGS_KEYS = ["routingLabelFallbacks"] as const;
-
+// Version 2 (the label feature without fallback rules) dropped `routingLabelFallbacks`, and its
+// migration deleted that key from older documents. Rules are live again here, so a document saved
+// as version 1 keeps its rules and one saved as version 2 simply has none: both parse as they are.
 export function migratePrRadarSettings(values: unknown): unknown {
-  if (typeof values !== "object" || values === null || Array.isArray(values)) return values;
-  const retired: readonly string[] = RETIRED_SETTINGS_KEYS;
-  return Object.fromEntries(Object.entries(values).filter(([key]) => !retired.includes(key)));
+  return values;
 }
 
 export const prRadarSettings = defineSettings({
   id: "pr-radar",
   scope: "host",
-  version: 2,
+  version: 3,
   schema: PrRadarSettingsSchema,
   migrate: migratePrRadarSettings,
 });
