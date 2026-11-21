@@ -945,11 +945,12 @@ describe("runRoutingScriptHandler", () => {
         "stubborn-timeout.sh",
         `trap '' TERM\necho $$ > "${pidFile}"\nwhile :; do sleep 0.05; done`,
       );
-      // The timeout sends SIGTERM at 300 ms and would send SIGKILL 20 s later.
+      // The timeout sends SIGTERM at 2 s (long enough for the script to have written its pid on a
+      // busy machine) and would send SIGKILL 20 s later.
       const timedOut = route(
         stubborn,
         {},
-        { timeoutMs: 300, outputBytes: 1024, killGraceMs: 20_000 },
+        { timeoutMs: 2_000, outputBytes: 1024, killGraceMs: 20_000 },
       );
       await expect(timedOut).rejects.toThrow(/timed out/);
       const pid = Number(readFileSync(pidFile, "utf8").trim());
