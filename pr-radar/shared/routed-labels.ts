@@ -119,9 +119,20 @@ function valueProblem(rawValue: unknown): string | null {
   return null;
 }
 
-// A key that starts with an allowed prefix keeps its name; any other key goes under pr-radar.route.
+// A prefix admits a key that equals it, any key under a prefix that ends in a separator (`ade.`),
+// and a key whose next character after the prefix is a separator (`ade.kind` admits `ade.kind.x`,
+// not `ade.kinder`; `team` admits `team/x`, not `teamx`).
+const SEPARATORS = [".", "/"];
+
+function admits(prefix: string, key: string): boolean {
+  if (!key.startsWith(prefix)) return false;
+  if (key.length === prefix.length) return true;
+  return SEPARATORS.includes(prefix.slice(-1)) || SEPARATORS.includes(key.charAt(prefix.length));
+}
+
+// A key that an allowed prefix admits keeps its name; any other key goes under pr-radar.route.
 function finalKey(key: string, prefixes: readonly string[]): string {
-  return prefixes.some((prefix) => key.startsWith(prefix)) ? key : `${ROUTE_NAMESPACE}${key}`;
+  return prefixes.some((prefix) => admits(prefix, key)) ? key : `${ROUTE_NAMESPACE}${key}`;
 }
 
 interface LabelEntry {

@@ -197,6 +197,34 @@ describe("checkRoutedLabels: unsafe text and shape", () => {
   });
 });
 
+describe("prefix separator", () => {
+  const kept = (key: string, prefix: string) =>
+    Object.keys(checkRoutedLabels({ [key]: "v" }, [prefix]).labels)[0] === key;
+
+  test("a prefix admits itself and keys that continue it with a separator", () => {
+    expect(kept("ade.kind", "ade.kind")).toBe(true);
+    expect(kept("ade.kind.x", "ade.kind")).toBe(true);
+    expect(kept("ade.kind/x", "ade.kind")).toBe(true);
+    expect(kept("team/x", "team")).toBe(true);
+  });
+
+  test("a prefix does not admit a key that only starts with the same letters", () => {
+    expect(checkRoutedLabels({ "ade.kinder": "v" }, ["ade.kind"]).labels).toEqual({
+      "pr-radar.route.ade.kinder": "v",
+    });
+    expect(checkRoutedLabels({ teamx: "v" }, ["team"]).labels).toEqual({
+      "pr-radar.route.teamx": "v",
+    });
+    expect(kept("ade.kind-x", "ade.kind")).toBe(false);
+  });
+
+  test("a prefix that ends in a separator admits everything under it", () => {
+    expect(kept("ade.anything", "ade.")).toBe(true);
+    expect(kept("team/a/b", "team/")).toBe(true);
+    expect(kept("ade", "ade.")).toBe(false);
+  });
+});
+
 describe("parseLabelPrefixes", () => {
   test("accepts a prefix of exactly the maximum key length, and voids one character more", () => {
     const exact = "k".repeat(MAX_LABEL_KEY_LEN);
