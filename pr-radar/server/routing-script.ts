@@ -18,7 +18,14 @@ export interface RoutingScriptLimits {
   timeoutMs: number;
   outputBytes: number;
   killGraceMs: number;
+  /** Largest stdin payload the script is sent; `DEFAULT_ROUTING_INPUT_BYTES` when left out. */
+  inputBytes?: number;
 }
+
+// The payload carries PR text (title, labels, linked issues) that another person wrote, so it has
+// no natural bound. An oversize one is refused rather than cut: the script would otherwise route
+// on a silently shortened record. The cap matches the output cap.
+const DEFAULT_ROUTING_INPUT_BYTES = 1024 * 1024;
 
 const DEFAULT_ROUTING_LIMITS: RoutingScriptLimits = {
   timeoutMs: COMMAND_TIMEOUT_MS,
@@ -204,7 +211,7 @@ interface ScriptRun {
 
 function startScriptCapped(
   scriptPath: string,
-  payload: unknown,
+  stdin: string,
   limits: RoutingScriptLimits,
   path: string,
 ): ScriptRun {
@@ -319,7 +326,7 @@ function startScriptCapped(
       });
     });
     child.stdin.on("error", () => {});
-    child.stdin.end(`${JSON.stringify(payload)}\n`);
+    child.stdin.end(stdin);
   });
   return { result, finished: finishedGate.promise, stop: () => stop() };
 }
@@ -399,6 +406,15 @@ export async function runRoutingScriptHandler(
     throw new Error("Routing scripts are not supported on Windows.");
   }
   if (routingStopped) throw new Error(ROUTING_STOPPED_MESSAGE);
+  // Checked before a place in line is taken: an oversize payload costs nothing to refuse.
+  const stdin = `${JSON.stringify(input.payload)}\n`;
+  const inputCap = limits.inputBytes ?? DEFAULT_ROUTING_INPUT_BYTES;
+  const inputBytes = Buffer.byteLength(stdin);
+  if (inputBytes > inputCap) {
+    throw new Error(
+      `The routing script input is ${inputBytes} bytes, over the ${inputCap} byte limit; the script was not run.`,
+    );
+  }
   // Paseo gives a plugin request the same 30 s as one script run, so time spent queued comes out
   // of the run's own budget.
   const startedAt = performance.now();
@@ -445,7 +461,7 @@ export async function runRoutingScriptHandler(
     // call has spent time on its settings read and path checks too, so it is trimmed like a queued one.
     const remaining = budgetLeft();
     if (remaining <= 0) throw new Error(queued ? ROUTING_BUSY_MESSAGE : ROUTING_PREFLIGHT_MESSAGE);
-    run = startScriptCapped(scriptPath, input.payload, { ...limits, timeoutMs: remaining }, path);
+    run = startScriptCapped(scriptPath, stdin, { ...limits, timeoutMs: remaining }, path);
   } catch (error) {
     // This call never ran: pass the turn on once the one in front is done, so the order holds.
     stopWaiting();
