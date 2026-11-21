@@ -7,6 +7,7 @@ import {
   displayLabelKey,
   labelPrefixesProblem,
   MAX_LABEL_KEY_LEN,
+  MAX_LABEL_VALUE_LEN,
   MAX_SCRIPT_LABELS,
   parseLabelPrefixes,
 } from "../shared/routed-labels";
@@ -196,6 +197,14 @@ describe("checkRoutedLabels: unsafe text and shape", () => {
     expect(describeLabel("path", "C:\\x")).toBe('"path"="C:\\\\x"');
     expect(describeLabel("k", 'say "hi"')).toBe('"k"="say \\"hi\\""');
     expect(describeLabel("k", "a‮b")).toBe('"k"="a\\u{202E}b"');
+  });
+
+  test("describeLabel shows an accepted key and value in full, up to their limits", () => {
+    const value = "v".repeat(MAX_LABEL_VALUE_LEN);
+    const key = "k".repeat(MAX_LABEL_KEY_LEN);
+    expect(describeLabel(key, value)).toBe(`"${key}"="${value}"`);
+    const slashes = "\\".repeat(MAX_LABEL_VALUE_LEN);
+    expect(describeLabel("k", slashes)).toBe(`"k"="${slashes.repeat(2)}"`);
   });
 });
 

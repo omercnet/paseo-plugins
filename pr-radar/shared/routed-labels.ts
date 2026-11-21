@@ -88,24 +88,26 @@ export function labelPrefixesProblem(raw: string): string | null {
 }
 
 // Keys shown in a notice come from the script, so control and invisible characters are written out.
-export function displayLabelKey(key: string): string {
+export function displayLabelKey(key: string, maxShown = MAX_SHOWN_KEY_LEN): string {
   const escaped = key
     .replaceAll("\\", "\\\\")
     .replace(
       ESCAPED_CHARS,
       (char) => `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
     );
-  return escaped.length > MAX_SHOWN_KEY_LEN ? `${escaped.slice(0, MAX_SHOWN_KEY_LEN)}...` : escaped;
+  return escaped.length > maxShown ? `${escaped.slice(0, maxShown)}...` : escaped;
 }
 
-function quoteLabelKey(key: string): string {
-  return `"${displayLabelKey(key).replaceAll('"', '\\"')}"`;
+function quoteLabelKey(key: string, maxShown = MAX_SHOWN_KEY_LEN): string {
+  return `"${displayLabelKey(key, maxShown).replaceAll('"', '\\"')}"`;
 }
 
 // How a label is shown in the modal: quoted, so a value cannot pass for a second label. Keys and
 // values are quoted the same way, so a backslash is written once as two, never doubled again.
+// Only accepted labels reach here: they hold no control or invisible characters, so escaping can at
+// most double a character, and twice the limits shows a key or value in full.
 export function describeLabel(key: string, value: string): string {
-  return `${quoteLabelKey(key)}=${quoteLabelKey(value)}`;
+  return `${quoteLabelKey(key, 2 * MAX_LABEL_KEY_LEN)}=${quoteLabelKey(value, 2 * MAX_LABEL_VALUE_LEN)}`;
 }
 
 function isReservedKey(key: string): boolean {
