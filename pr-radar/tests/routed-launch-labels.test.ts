@@ -7,7 +7,11 @@ import type { RadarRow } from "../client/radar";
 import type { StartAgentLaunchRequest } from "../client/start-agent-modal";
 import contribute from "../index.server";
 import { decideRoutedLabels, RoutedLabelsBlockedError } from "../shared/routed-labels";
-import { type PrRadarSettings, PrRadarSettingsSchema } from "../shared/settings";
+import {
+  migratePrRadarSettings,
+  type PrRadarSettings,
+  PrRadarSettingsSchema,
+} from "../shared/settings";
 import { type RoutingScriptResult, runRoutingScript } from "../shared/viewer-scope";
 
 function row(overrides: Partial<RadarRow> = {}): RadarRow {
@@ -224,6 +228,32 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
     expect(outcome.launch.created).toEqual([]);
   });
 });
+
+describe.each(PATHS)(
+  "settings saved with retired fallback rules, through %s",
+  (_name, launchVia) => {
+    const saved = {
+      routingLabelPrefixes: "ade.",
+      routingLabelFallbacks: [
+        { repository: "*", until: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString() },
+      ],
+    };
+
+    test("the strict schema refuses the stored document until it is migrated", () => {
+      expect(PrRadarSettingsSchema.safeParse(saved).success).toBe(false);
+    });
+
+    test("they load once migrated, and an active retired rule enables no fallback launch", async () => {
+      const settings = PrRadarSettingsSchema.parse(migratePrRadarSettings(saved));
+      expect(settings).not.toHaveProperty("routingLabelFallbacks");
+      const outcome = await launchVia(settings, {
+        labels: { "ade.kind": "external-review", "paseo.x": "y" },
+      });
+      expect(outcome.launched).toBe(false);
+      expect(outcome.launch.created).toEqual([]);
+    });
+  },
+);
 
 describe("the launch refuses bad labels even from a caller that skipped its own check", () => {
   test("launchNewAgent throws before preparing a worktree", async () => {

@@ -20,10 +20,38 @@ import {
   prepareWorkspaceCwdHandler,
   slugifyBranch,
 } from "../server/workspace-ops";
-import { DEFAULT_PR_RADAR_SETTINGS, PrRadarSettingsSchema } from "../shared/settings";
+import { labelPrefixesProblem } from "../shared/routed-labels";
+import {
+  DEFAULT_PR_RADAR_SETTINGS,
+  migratePrRadarSettings,
+  PrRadarSettingsSchema,
+  prRadarSettings,
+} from "../shared/settings";
 import { RoutingScriptResultSchema } from "../shared/viewer-scope";
 
 describe("settings schema", () => {
+  test("migration drops retired keys and keeps every other value", () => {
+    const migrated = migratePrRadarSettings({
+      sourceCodeDir: "~/code",
+      routingLabelPrefixes: "ade.kind",
+      routingLabelFallbacks: [{ repository: "*", until: "2099-01-01T00:00Z" }],
+    });
+    expect(migrated).toEqual({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" });
+    expect(PrRadarSettingsSchema.parse(migrated).routingLabelPrefixes).toBe("ade.kind");
+    expect(migratePrRadarSettings("not an object")).toBe("not an object");
+    expect(migratePrRadarSettings(null)).toBeNull();
+  });
+
+  test("the saved settings document is version 2 and migrates older ones", () => {
+    expect(prRadarSettings.version).toBe(2);
+    expect(prRadarSettings.migrate).toBe(migratePrRadarSettings);
+  });
+
+  test("a reset leaves no prefix warning to show", () => {
+    expect(labelPrefixesProblem("bad prefix!")).not.toBeNull();
+    expect(labelPrefixesProblem(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes)).toBeNull();
+  });
+
   test("provides defaults when empty object is parsed", () => {
     const parsed = PrRadarSettingsSchema.parse({});
     expect(parsed).toEqual(DEFAULT_PR_RADAR_SETTINGS);
