@@ -485,6 +485,12 @@ describe("a fallback rule never drops a downgrade label", () => {
       policy: { routingLabelPrefixes: prefixes, routingLabelFallbacks: rules },
       now: NOW,
     });
+  test("a prefix that ends in a dot guards every key under it", () => {
+    expect(blockedBy({ "ade.kind": "external-review", "x y": "1" }, "ade.")).not.toBeNull();
+    expect(blockedBy({ "ade.anything.deep": "v", "x y": "1" }, "ade.")).not.toBeNull();
+    expect(decideWith({ ade: "v", "x y": "1" }, "ade.").status).toBe("fallback");
+  });
+
   const blockedBy = (labels: unknown, prefixes: string) => {
     const decision = decideWith(labels, prefixes);
     expect(decision.status).toBe("blocked");

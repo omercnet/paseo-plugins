@@ -276,6 +276,18 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
     }
   });
 
+  test("an active fallback rule cannot drop a label under a trailing-dot prefix", async () => {
+    const settings = settingsWith({
+      routingLabelFallbacks: [{ repository: "acme/api", until: new Date(NOW + DAY).toISOString() }],
+    });
+    const outcome = await launchVia(settings, {
+      labels: { "ade.kind": "external-review", "x y": "1" },
+    });
+    expect(outcome.launched).toBe(false);
+    expect(outcome.message).toContain("cannot drop it");
+    expect(outcome.launch.created).toEqual([]);
+  });
+
   test("an active fallback rule still launches when no returned key is a downgrade label", async () => {
     const settings = settingsWith({
       routingLabelPrefixes: "ade.kind",
