@@ -61,6 +61,11 @@ describe("checkRoutedLabels: both label shapes", () => {
     expect(checked.rejected.map(({ key }) => key)).toEqual(["pr-radar.route.x"]);
   });
 
+  test("a collision reason names the other key in full", () => {
+    const [first] = checkRoutedLabels({ "ade.kind": "a", " ade.kind": "b" }, ADE).rejected;
+    expect(first?.reason).toContain('collides with " ade.kind"');
+  });
+
   test("keys that collide after trimming are both rejected", () => {
     const checked = checkRoutedLabels({ "ade.kind": "a", " ade.kind ": "b" }, ADE);
     expect(checked.labels).toEqual({});
