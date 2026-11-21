@@ -20,6 +20,8 @@ export interface RoutingScriptLimits {
   killGraceMs: number;
   /** Largest stdin payload the script is sent; `DEFAULT_ROUTING_INPUT_BYTES` when left out. */
   inputBytes?: number;
+  /** Candidate PATH directories for the script; `ROUTING_SCRIPT_PATH_DIRS` when left out (tests narrow it). */
+  pathDirs?: readonly string[];
 }
 
 // The payload carries PR text (title, labels, linked issues) that another person wrote, so it has
@@ -34,6 +36,14 @@ const DEFAULT_ROUTING_LIMITS: RoutingScriptLimits = {
 };
 
 const STICKY_BIT = 0o1000;
+
+// The script's working directory. It is not the daemon's: an empty or relative PATH entry makes a
+// lookup fall back to the current directory, and the daemon's can hold files other people wrote.
+// The filesystem root belongs to root and is never group or other writable.
+const ROUTING_SCRIPT_CWD = "/";
+
+const NO_TRUSTED_PATH_MESSAGE =
+  "None of the system directories the routing script searches for tools (/usr/bin, /bin and the like) passed the ownership and permission check, so the script was not run; run chown or chmod go-w on them.";
 
 // The script's PATH. The daemon's own PATH can list directories other users or tools write to
 // (~/.local/bin, a project's node_modules/.bin), and the script's `#!/usr/bin/env interpreter` line
@@ -237,6 +247,7 @@ function startScriptCapped(
       child = spawn(scriptPath, [], {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...allowListedEnv(new Set()), PATH: path },
+        cwd: ROUTING_SCRIPT_CWD,
         detached: true,
       });
     } catch (spawnError) {
@@ -475,7 +486,14 @@ export async function runRoutingScriptHandler(
       // The configuration may have changed while this call waited.
       scriptPath = await withinBudget(preflight(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
     }
-    const path = await withinBudget(trustedScriptPath(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
+    const path = await withinBudget(
+      trustedScriptPath(undefined, limits.pathDirs),
+      budgetLeft(),
+      ROUTING_PREFLIGHT_MESSAGE,
+    );
+    // An empty PATH is not "no directories": the script's `env` lookup would search the current
+    // directory instead.
+    if (!path) throw new Error(NO_TRUSTED_PATH_MESSAGE);
     // A call that was waiting or reading settings when the plugin stopped must not start a script.
     if (routingStopped) throw new Error(ROUTING_STOPPED_MESSAGE);
     // Taken last, after every await, so the script's own timer starts when the budget says. A first

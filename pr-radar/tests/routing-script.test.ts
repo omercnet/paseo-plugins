@@ -339,6 +339,35 @@ describe("runRoutingScriptHandler", () => {
     expect(seen).not.toContain(evil);
   });
 
+  test("refuses to run the script when no PATH directory is trusted", async () => {
+    const root = makeRoot();
+    const ran = join(root, "ran.txt");
+    const script = writeScript(root, "nopath.sh", `echo ran > "${ran}"\necho '{}'`);
+    const open = join(root, "open");
+    mkdirSync(open);
+    chmodSync(open, 0o777);
+    // Every candidate is missing or writable by others, so the kept PATH is the empty string.
+    const noneTrusted = { ...FAST_LIMITS, pathDirs: [open, join(root, "missing")] };
+    await expect(trustedScriptPath(undefined, noneTrusted.pathDirs)).resolves.toBe("");
+    await expect(route(script, {}, noneTrusted)).rejects.toThrow(
+      /None of the system directories the routing script searches for tools/,
+    );
+    expect(existsSync(ran)).toBe(false);
+    // The refused call passed its turn on: the next one runs normally.
+    await expect(route(script, {}, FAST_LIMITS)).resolves.toEqual({});
+    expect(existsSync(ran)).toBe(true);
+  });
+
+  test("runs the script from a fixed directory, not the daemon's", async () => {
+    const root = makeRoot();
+    const cwdFile = join(root, "cwd.txt");
+    const script = writeScript(root, "cwd.sh", `pwd -P > "${cwdFile}"\necho '{}'`);
+    await route(script);
+    const seen = readFileSync(cwdFile, "utf8").trim();
+    expect(seen).toBe("/");
+    expect(seen).not.toBe(realpathSync(process.cwd()));
+  });
+
   test("drops a PATH directory that another user owns or can write", async () => {
     if (process.getuid?.() === 0) return;
     const otherUid = (process.getuid?.() ?? 0) + 1000;
