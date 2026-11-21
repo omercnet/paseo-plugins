@@ -24,6 +24,8 @@ import { type RoutingScriptResult, runRoutingScript } from "../shared/viewer-sco
 
 const NOW = Date.parse("2026-11-20T12:00:00Z");
 const DAY = 24 * 60 * 60 * 1_000;
+// Invisible and look-alike characters are built from code points, so the source shows what it tests.
+const cp = (codePoint: number) => String.fromCodePoint(codePoint);
 
 function row(overrides: Partial<RadarRow> = {}): RadarRow {
   return {
@@ -293,6 +295,43 @@ describe.each(PATHS)("routed labels through %s", (_name, launchVia) => {
     });
     expect(outcome.launched).toBe(false);
     expect(outcome.message).toContain("cannot drop it");
+    expect(outcome.launch.created).toEqual([]);
+  });
+
+  test.each([
+    ["an invisible character", `a${cp(0x200b)}de.kind`],
+    ["a bidi override", `${cp(0x202e)}ade.kind`],
+    ["a full-width letter", `${cp(0xff41)}de.kind`],
+    // Cyrillic a: no comparison sees through it, so the malformed prefix itself blocks the rule.
+    ["a look-alike letter", `${cp(0x430)}de.kind`],
+  ])(
+    "an active fallback rule cannot drop a downgrade label when its prefix holds %s",
+    async (_name, prefix) => {
+      const settings = settingsWith({
+        routingLabelPrefixes: prefix,
+        routingLabelFallbacks: [
+          { repository: "acme/api", until: new Date(NOW + DAY).toISOString() },
+        ],
+      });
+      const outcome = await launchVia(settings, {
+        labels: { "ade.kind": "external-review", "x y": "1" },
+      });
+      expect(outcome.launched).toBe(false);
+      expect(outcome.message).toMatch(/cannot drop it|cannot be used until it is fixed/);
+      expect(outcome.launch.prepared).toEqual([]);
+      expect(outcome.launch.opened).toEqual([]);
+      expect(outcome.launch.created).toEqual([]);
+    },
+  );
+
+  test("an active fallback rule is refused while any Allowed label prefix is malformed", async () => {
+    const settings = settingsWith({
+      routingLabelPrefixes: `ade.kind, bad prefix!`,
+      routingLabelFallbacks: [{ repository: "acme/api", until: new Date(NOW + DAY).toISOString() }],
+    });
+    const outcome = await launchVia(settings, { labels: { team: "core", "x y": "1" } });
+    expect(outcome.launched).toBe(false);
+    expect(outcome.message).toContain("cannot be used until it is fixed");
     expect(outcome.launch.created).toEqual([]);
   });
 

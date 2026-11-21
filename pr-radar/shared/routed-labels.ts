@@ -73,6 +73,24 @@ function splitPrefixes(raw: string): string[] {
   return raw.split(/[\s,]+/).filter((prefix) => prefix.length > 0);
 }
 
+// One normalizer for both sides of the downgrade guard's comparison: a configured prefix and a key
+// a script returns. NFKC folds compatibility forms (full-width letters, U+2024 for a dot), and every
+// control, format and default-ignorable character goes, so an invisible character in a prefix
+// cannot make it differ from the key it looks like (UTS #39 skeleton step 2 removes the same code
+// points). Case and surrounding space are the caller's business. Validation does not use it: a
+// prefix that holds such a character is a visible error there, never silently repaired.
+function stripInvisible(text: string): string {
+  return text.normalize("NFKC").replace(ESCAPED_CHARS, "");
+}
+
+function firstPrefixProblem(raw: string): { prefix: string; problem: string } | null {
+  for (const prefix of splitPrefixes(raw)) {
+    const problem = prefixProblem(prefix);
+    if (problem) return { prefix, problem };
+  }
+  return null;
+}
+
 function prefixProblem(prefix: string): string | null {
   if (prefix.length > MAX_LABEL_KEY_LEN) {
     return `is longer than ${MAX_LABEL_KEY_LEN} characters`;
@@ -90,13 +108,10 @@ function prefixProblem(prefix: string): string | null {
 // Why the whole setting is void, naming the first bad entry; null when every entry is usable.
 // The settings screen shows it, so a typo does not silently turn every prefix off.
 export function labelPrefixesProblem(raw: string): string | null {
-  for (const prefix of splitPrefixes(raw)) {
-    const problem = prefixProblem(prefix);
-    if (problem) {
-      return `Ignoring every prefix: ${quoteLabelKey(prefix)} ${problem}. Fix or remove it.`;
-    }
-  }
-  return null;
+  const bad = firstPrefixProblem(raw);
+  return bad
+    ? `Ignoring every prefix: ${quoteLabelKey(bad.prefix)} ${bad.problem}. Fix or remove it.`
+    : null;
 }
 
 // Keys shown in a notice come from the script, so control and invisible characters are written out.
@@ -312,21 +327,33 @@ export function describeFallbackRule(rule: LabelFallbackRule): string {
 
 // A downgrade label is one an operator trusted to keep its own name: an Allowed label prefix admits
 // it. A fallback rule skips every script label, so it must never apply to a set that holds one.
-// The guard is wider than the real check, so it fails closed: it reads the raw prefix entries (one
+// The guard is wider than the real check, so it fails closed. It reads the raw prefix entries (one
 // malformed entry voids the parsed list, which would otherwise let the fallback drop the label),
-// ignores case, and strips invisible characters before comparing. Blocking more is harmless.
+// ignores case, and normalizes prefixes and keys the same way before comparing, so an invisible
+// character in a prefix cannot hide the key it imitates. A prefix that is still malformed (a
+// look-alike letter, say) cannot be matched to any key, so the fallback is refused outright.
+// Blocking more is harmless.
 function downgradeRefusal(labels: unknown, rawPrefixes: string): string | null {
-  const prefixes = splitPrefixes(rawPrefixes).map((prefix) => prefix.toLowerCase());
-  if (prefixes.length === 0 || labels === undefined || labels === null) return null;
-  if (typeof labels !== "object" || Array.isArray(labels)) {
-    return "The labels are not an object of keys and values, so PR Radar cannot tell whether they hold a label an Allowed label prefix trusts, and a fallback rule cannot drop it.";
+  const prefixes = splitPrefixes(rawPrefixes)
+    .map((prefix) => stripInvisible(prefix).toLowerCase())
+    .filter((prefix) => prefix.length > 0);
+  if (prefixes.length > 0 && labels !== undefined && labels !== null) {
+    if (typeof labels !== "object" || Array.isArray(labels)) {
+      return "The labels are not an object of keys and values, so PR Radar cannot tell whether they hold a label an Allowed label prefix trusts, and a fallback rule cannot drop it.";
+    }
+    const held = Object.keys(labels).find((key) => {
+      const guarded = stripInvisible(key).trim().toLowerCase();
+      return prefixes.some((prefix) => admits(prefix, guarded));
+    });
+    if (held !== undefined) {
+      return `The label ${quoteLabelKey(held)} is one an Allowed label prefix trusts, and a fallback rule cannot drop it.`;
+    }
   }
-  const held = Object.keys(labels).find((key) => {
-    const guarded = key.replace(ESCAPED_CHARS, "").trim().toLowerCase();
-    return prefixes.some((prefix) => admits(prefix, guarded));
-  });
-  if (held === undefined) return null;
-  return `The label ${quoteLabelKey(held)} is one an Allowed label prefix trusts, and a fallback rule cannot drop it.`;
+  const bad = firstPrefixProblem(rawPrefixes);
+  if (bad) {
+    return `The Allowed label prefix ${quoteLabelKey(bad.prefix)} ${bad.problem}, so PR Radar cannot tell which labels a prefix trusts, and a fallback rule cannot be used until it is fixed.`;
+  }
+  return null;
 }
 
 export function decideRoutedLabels(input: {

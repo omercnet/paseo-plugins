@@ -19,6 +19,8 @@ const ADE = ["ade."];
 const NOW = Date.parse("2026-11-20T12:00:00Z");
 const DAY = 24 * 60 * 60 * 1_000;
 const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
+// Invisible and look-alike characters are built from code points, so the source shows what it tests.
+const cp = (codePoint: number) => String.fromCodePoint(codePoint);
 
 function rejectedKeys(raw: unknown, prefixes: readonly string[] = ADE): string[] {
   return checkRoutedLabels(raw, prefixes).rejected.map(({ key }) => key);
@@ -522,6 +524,65 @@ describe("a fallback rule never drops a downgrade label", () => {
     expect(blockedBy({ "ADE.Kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
     expect(blockedBy({ "​ade.kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
     expect(blockedBy({ " ade.kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
+  });
+
+  // The review's case: the prefix, not the key, carries the invisible character. The set is
+  // rejected for "x y", the invisible prefix voided the parsed list, and the guard used to compare
+  // the raw prefix with the key, so ade.kind went missing from the fallback launch.
+  test.each([
+    ["a zero-width space", `a${cp(0x200b)}de.kind`],
+    ["a word joiner", `ade${cp(0x2060)}.kind`],
+    ["a bidi override", `${cp(0x202e)}ade.kind`],
+    ["a soft hyphen", `ade.ki${cp(0xad)}nd`],
+    ["a byte-order mark", `${cp(0xfeff)}ade.kind`],
+    ["an invisible filler", `ade.kind${cp(0x3164)}`],
+    ["a variation selector", `ade.kind${cp(0xfe0f)}`],
+    ["a full-width letter", `${cp(0xff41)}de.kind`],
+  ])("a prefix with %s does not hide the downgrade label from the guard", (_name, prefix) => {
+    const decision = blockedBy({ "ade.kind": "external-review", "x y": "1" }, prefix);
+    expect(decision?.fallbackRefusal).toContain(`"ade.kind"`);
+    expect(decision?.fallbackRefusal).toContain("cannot drop it");
+  });
+
+  test("validation shows such a prefix as an error; the guard still protects the label", () => {
+    for (const prefix of [
+      `a${cp(0x200b)}de.kind`,
+      `${cp(0x202e)}ade.kind`,
+      `${cp(0xff41)}de.kind`,
+    ]) {
+      expect(parseLabelPrefixes(prefix)).toEqual([]);
+      expect(labelPrefixesProblem(prefix)).toContain("Ignoring every prefix");
+      expect(decideWith({ "ade.kind": "external-review", "x y": "1" }, prefix).status).toBe(
+        "blocked",
+      );
+    }
+  });
+
+  test("the guard names the label when it can and calls the prefix malformed when it cannot", () => {
+    const named = blockedBy({ "ade.kind": "external-review", "x y": "1" }, `a${cp(0x200b)}de.kind`);
+    expect(named?.fallbackRefusal).toContain(`"ade.kind"`);
+    expect(named?.fallbackRefusal).not.toContain("cannot be used until it is fixed");
+    // Cyrillic a looks like the Latin one and folds to nothing the guard can compare.
+    const generic = blockedBy({ "ade.kind": "external-review", "x y": "1" }, `${cp(0x430)}de.kind`);
+    expect(generic?.fallbackRefusal).toContain("cannot be used until it is fixed");
+  });
+
+  test("a malformed prefix blocks the fallback outright, even when no returned key matches it", () => {
+    for (const prefixes of [
+      `${cp(0x430)}de.kind`,
+      "ade.kind, bad prefix!",
+      "ade.kind, pr-radar.",
+    ]) {
+      const unrelated = blockedBy({ team: "core", "x y": "1" }, `${prefixes}, bad!`);
+      expect(unrelated?.fallbackRefusal).toContain("cannot be used until it is fixed");
+      expect(unrelated?.message).toContain("does not apply");
+    }
+    const alone = blockedBy({ team: "core", "x y": "1" }, `${cp(0x430)}de.kind`);
+    expect(alone?.fallbackRefusal).toContain("cannot be used until it is fixed");
+  });
+
+  test("a well-formed prefix list leaves the fallback usable", () => {
+    expect(decideWith({ team: "core", "x y": "1" }, "ade.kind, team/").status).toBe("fallback");
   });
 
   test("a label set that is not an object blocks when a prefix is configured", () => {
