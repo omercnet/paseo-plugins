@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   buildAgentConfig,
+  buildAgentLabels,
   buildAgentPrompt,
   buildIssueRows,
   splitDraftRows,
@@ -19,9 +20,42 @@ import {
   prepareWorkspaceCwdHandler,
   slugifyBranch,
 } from "../server/workspace-ops";
-import { DEFAULT_PR_RADAR_SETTINGS, PrRadarSettingsSchema } from "../shared/settings";
+import { labelPrefixesProblem } from "../shared/routed-labels";
+import {
+  DEFAULT_PR_RADAR_SETTINGS,
+  migratePrRadarSettings,
+  PrRadarSettingsSchema,
+  prRadarSettings,
+} from "../shared/settings";
+import { RoutingScriptResultSchema } from "../shared/viewer-scope";
 
 describe("settings schema", () => {
+  test("a document saved by the label-only version loads with no fallback rule", () => {
+    const parsed = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" }),
+    );
+    expect(parsed.routingLabelFallbacks).toEqual([]);
+    expect(parsed.routingLabelPrefixes).toBe("ade.kind");
+  });
+
+  test("a document saved with fallback rules keeps them through migration", () => {
+    const rule = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
+    const parsed = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ routingLabelFallbacks: [rule] }),
+    );
+    expect(parsed.routingLabelFallbacks).toEqual([rule]);
+  });
+
+  test("the saved settings document is version 3 and migrates older ones", () => {
+    expect(prRadarSettings.version).toBe(3);
+    expect(prRadarSettings.migrate).toBe(migratePrRadarSettings);
+  });
+
+  test("a reset leaves no prefix warning to show", () => {
+    expect(labelPrefixesProblem("bad prefix!")).not.toBeNull();
+    expect(labelPrefixesProblem(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes)).toBeNull();
+  });
+
   test("provides defaults when empty object is parsed", () => {
     const parsed = PrRadarSettingsSchema.parse({});
     expect(parsed).toEqual(DEFAULT_PR_RADAR_SETTINGS);
@@ -96,6 +130,24 @@ describe("agent config & draft splitting", () => {
       thinkingOptionId: "high",
       options: { contextMode: "full" },
     });
+  });
+
+  test("buildAgentLabels adds accepted labels and keeps pr-radar.cwd authoritative", () => {
+    expect(buildAgentLabels("CWD-BASE")).toEqual({ "pr-radar.cwd": "CWD-BASE" });
+    expect(
+      buildAgentLabels("CWD-WORKTREE", {
+        "ade.kind": "external-review",
+        "pr-radar.cwd": "CWD-BASE",
+      }),
+    ).toEqual({ "ade.kind": "external-review", "pr-radar.cwd": "CWD-WORKTREE" });
+  });
+
+  test("a malformed routed labels value survives parsing so launch validation can block it", () => {
+    const parsed = RoutingScriptResultSchema.parse({ model: "m", labels: { a: 1 } });
+    expect(parsed.model).toBe("m");
+    expect(parsed.labels).toEqual({ a: 1 });
+    expect(RoutingScriptResultSchema.parse({ labels: { a: "b" } }).labels).toEqual({ a: "b" });
+    expect(RoutingScriptResultSchema.parse({ labels: "x" }).labels).toBe("x");
   });
 
   test("splitDraftRows separates regular PRs and DPRs", () => {
