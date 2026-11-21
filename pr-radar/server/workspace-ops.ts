@@ -967,7 +967,7 @@ async function populateNewWorktree(baseRoot: string, worktreePath: string): Prom
   } catch (checkoutError) {
     try {
       // No short timeout: the cleanup must be allowed to finish.
-      await runGit(baseRoot, ["worktree", "remove", "--force", worktreePath]);
+      await runGit(baseRoot, ["worktree", "remove", "--force", "--", worktreePath]);
     } catch (removalError) {
       throw new AggregateError(
         [checkoutError, removalError],

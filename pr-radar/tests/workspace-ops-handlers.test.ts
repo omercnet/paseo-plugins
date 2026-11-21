@@ -1504,6 +1504,23 @@ describe("worktree creation failures", () => {
     expect(worktreeCount(repoDir)).toBe(2);
   });
 
+  test("passes the path after -- when it removes the half-created worktree", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const log = join(root, "remove-args.log");
+    stubGit(
+      root,
+      `case "$*" in *"worktree remove"*) echo "$*" >> '${log}';; esac\n${checkoutFails}`,
+    );
+    await expect(
+      prepare(request({ itemKind: "issue", prNumber: 12, targetDir: repoDir })),
+    ).rejects.toThrow(/stub: checkout refused/);
+    const removals = readFileSync(log, "utf8").trim().split("\n");
+    expect(removals).toHaveLength(1);
+    expect(removals[0]).toMatch(/worktree remove --force -- \S*issue-12\S*$/);
+  });
+
   test("reports a failing branch lookup instead of calling the checkout detached", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
