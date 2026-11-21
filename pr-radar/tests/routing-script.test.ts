@@ -104,6 +104,30 @@ describe("runRoutingScriptHandler", () => {
     expect(JSON.parse(readFileSync(captured, "utf8"))).toEqual({ pr: 7 });
   });
 
+  test("refuses a payload over the input cap without running the script", async () => {
+    const root = makeRoot();
+    const ran = join(root, "ran.txt");
+    const script = writeScript(root, "cap.sh", `echo ran > "${ran}"\ncat > /dev/null\necho '{}'`);
+    const limits = { ...FAST_LIMITS, inputBytes: 200 };
+    await expect(route(script, { pr: { body: "x".repeat(300) } }, limits)).rejects.toThrow(
+      /input is \d+ bytes, over the 200 byte limit/,
+    );
+    expect(existsSync(ran)).toBe(false);
+    // The refusal took no place in line, and a payload at the cap still goes through. A
+    // multi-byte character counts by its bytes, not its length.
+    await expect(route(script, { pr: "x".repeat(150) }, limits)).resolves.toEqual({});
+    await expect(route(script, { pr: "\u00e9".repeat(150) }, limits)).rejects.toThrow(/over the/);
+  });
+
+  test("sends a payload of 256 KiB whole when no cap is passed", async () => {
+    const root = makeRoot();
+    const captured = join(root, "stdin.json");
+    const script = writeScript(root, "big.sh", `cat > "${captured}"\necho '{}'`);
+    const pr = "x".repeat(256 * 1024);
+    await expect(route(script, { pr }, FAST_LIMITS)).resolves.toEqual({});
+    expect(JSON.parse(readFileSync(captured, "utf8"))).toEqual({ pr });
+  });
+
   test("treats empty output as no routing decision", async () => {
     const script = writeScript(makeRoot(), "empty.sh", "cat > /dev/null");
     await expect(route(script)).resolves.toEqual({});
