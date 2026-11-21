@@ -598,6 +598,11 @@ export function StartAgentModal({
                     {describeRejection(rejection)}
                   </Text>
                 ))}
+                {labelDecision.fallbackRefusal ? (
+                  <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>
+                    {labelDecision.fallbackRefusal}
+                  </Text>
+                ) : null}
               </View>
             ) : null}
             {labelDecision.status === "fallback" ? (
