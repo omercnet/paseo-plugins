@@ -1550,21 +1550,36 @@ describe("a branch held by the base checkout", () => {
 });
 
 describe("concurrent launches", () => {
-  test("refuses a second launch of the same issue while the first prepares its workspace", async () => {
+  test("hands a second identical launch the running launch's result", async () => {
     const root = makeRoot();
     const repoDir = join(root, "repo");
     initRepo(repoDir, "git@github.com:owner/repo.git");
     const issue = request({ itemKind: "issue", prNumber: 12, targetDir: repoDir });
     const first = prepare(issue);
     const second = prepare(issue);
-    await expect(second).rejects.toThrow(/already preparing its workspace/);
+    // One run serves both clicks: the same promise, so the same result object.
+    expect(second).toBe(first);
     const result = await first;
+    expect(await second).toBe(result);
     expect(result.worktreeCreated).toBe(true);
 
-    // The lock is released, so a later launch reuses the finished worktree.
+    // The entry is released, so a later launch reuses the finished worktree.
     const later = await prepare(issue);
     expect(later.worktreeCreated).toBe(false);
     expect(later.cwd).toBe(result.cwd);
+  });
+
+  test("refuses a second launch of the same issue that asks for different settings", async () => {
+    const root = makeRoot();
+    const repoDir = join(root, "repo");
+    initRepo(repoDir, "git@github.com:owner/repo.git");
+    const issue = request({ itemKind: "issue", prNumber: 12, targetDir: repoDir });
+    const first = prepare(issue);
+    const second = prepare({ ...issue, cwdMode: "CWD-BASE" });
+    await expect(second).rejects.toThrow(/already preparing its workspace with different settings/);
+    const result = await first;
+    expect(result.worktreeCreated).toBe(true);
+    expect(result.cwdTag).toBe("CWD-WORKTREE");
   });
 
   test("prepares the same issue number of two repositories at once", async () => {
