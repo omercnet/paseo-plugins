@@ -110,7 +110,7 @@ function prefixProblem(prefix: string): string | null {
 export function labelPrefixesProblem(raw: string): string | null {
   const bad = firstPrefixProblem(raw);
   return bad
-    ? `Ignoring every prefix: ${quoteLabelKey(bad.prefix)} ${bad.problem}. Fix or remove it.`
+    ? `Ignoring every prefix: ${quotePrefix(bad.prefix)} ${bad.problem}. Fix or remove it.`
     : null;
 }
 
@@ -127,6 +127,16 @@ export function displayLabelKey(key: string, maxShown = MAX_SHOWN_KEY_LEN): stri
 
 function quoteLabelKey(key: string, maxShown = MAX_SHOWN_KEY_LEN): string {
   return `"${displayLabelKey(key, maxShown).replaceAll('"', '\\"')}"`;
+}
+
+// A prefix in a notice about a malformed prefix: every character outside ASCII is written out too,
+// because a look-alike letter (Cyrillic a) prints exactly like the Latin one it imitates.
+function quotePrefix(prefix: string): string {
+  const shown = displayLabelKey(prefix).replace(
+    /[^\x20-\x7e]/gu,
+    (char) => `\\u{${(char.codePointAt(0) ?? 0).toString(16).toUpperCase()}}`,
+  );
+  return `"${shown.replaceAll('"', '\\"')}"`;
 }
 
 // How a label is shown in the modal: quoted, so a value cannot pass for a second label. Keys and
@@ -265,9 +275,29 @@ export function checkRoutedLabels(raw: unknown, prefixes: readonly string[]): Ch
   return { labels: rejected.length > 0 ? {} : labels, rejected };
 }
 
-export type FallbackRuleStatus = "active" | "expired" | "too-far";
+export type FallbackRuleStatus = "active" | "expired" | "too-far" | "not-a-date";
+
+// The date and time fields name a moment that exists. `Date.parse` in V8 rolls 2026-11-31 over to
+// 2026-12-01 and other engines read it as invalid, so devices could disagree about when a rule ends.
+// A timestamp that fails this is never active.
+export function isRealTimestamp(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(value);
+  if (!match) return false;
+  const [year, month, day, hour, minute, second] = match.slice(1).map((part) => Number(part ?? 0));
+  const daysInMonth = new Date(Date.UTC(year ?? 0, month ?? 0, 0)).getUTCDate();
+  return (
+    (month ?? 0) >= 1 &&
+    (month ?? 0) <= 12 &&
+    (day ?? 0) >= 1 &&
+    (day ?? 0) <= daysInMonth &&
+    (hour ?? 99) <= 23 &&
+    (minute ?? 99) <= 59 &&
+    (second ?? 0) <= 59
+  );
+}
 
 export function fallbackRuleStatus(rule: LabelFallbackRule, now: number): FallbackRuleStatus {
+  if (!isRealTimestamp(rule.until)) return "not-a-date";
   const until = Date.parse(rule.until);
   if (!Number.isFinite(until) || until <= now) return "expired";
   if (until - now > MAX_FALLBACK_MS) return "too-far";
@@ -283,7 +313,7 @@ export function nextFallbackBoundary(
   let next: number | null = null;
   for (const rule of rules) {
     const until = Date.parse(rule.until);
-    if (!Number.isFinite(until)) continue;
+    if (!isRealTimestamp(rule.until) || !Number.isFinite(until)) continue;
     for (const boundary of [until, until - MAX_FALLBACK_MS]) {
       if (boundary > now && (next === null || boundary < next)) next = boundary;
     }
@@ -313,6 +343,7 @@ export function watchFallbackBoundary(
 
 export function describeFallbackStatus(rule: LabelFallbackRule, now: number): string {
   const status = fallbackRuleStatus(rule, now);
+  if (status === "not-a-date") return `ignored: ${rule.until} is not a real date`;
   if (status === "expired") return `expired ${rule.until}`;
   if (status === "too-far") {
     return `ignored: ends more than ${MAX_FALLBACK_DAYS} days from now (${rule.until})`;
@@ -388,7 +419,7 @@ function downgradeRefusal(labels: unknown, rawPrefixes: string): string | null {
   }
   const bad = firstPrefixProblem(rawPrefixes);
   if (bad) {
-    return `The Allowed label prefix ${quoteLabelKey(bad.prefix)} ${bad.problem}, so PR Radar cannot tell which labels a prefix trusts, and a fallback rule cannot be used until it is fixed.`;
+    return `The Allowed label prefix ${quotePrefix(bad.prefix)} ${bad.problem}, so PR Radar cannot tell which labels a prefix trusts, and a fallback rule cannot be used until it is fixed.`;
   }
   return null;
 }
@@ -452,6 +483,7 @@ export function parseFallbackRuleInput(input: string, now: number): ParsedFallba
     };
   }
   const status = fallbackRuleStatus(parsed.data, now);
+  if (status === "not-a-date") return { error: "That date does not exist." };
   if (status === "expired") return { error: "That time has already passed." };
   if (status === "too-far") {
     return { error: `Fallback rules must end within ${MAX_FALLBACK_DAYS} days.` };

@@ -3,9 +3,12 @@ import {
   activeFallbackRule,
   checkRoutedLabels,
   decideRoutedLabels,
+  describeFallbackStatus,
   describeLabel,
   describeRejection,
   displayLabelKey,
+  fallbackRuleStatus,
+  isRealTimestamp,
   labelPrefixesProblem,
   MAX_LABEL_KEY_LEN,
   MAX_LABEL_VALUE_LEN,
@@ -583,6 +586,15 @@ describe("a fallback rule never drops a downgrade label", () => {
     expect(alone?.fallbackRefusal).toContain("cannot be used until it is fixed");
   });
 
+  test("a look-alike letter in a prefix is written out, so the notice does not read as ade.kind", () => {
+    const prefix = `${cp(0x430)}de.kind`;
+    expect(labelPrefixesProblem(prefix)).toContain('"\\u{430}de.kind"');
+    expect(labelPrefixesProblem(prefix)).not.toContain(cp(0x430));
+    const refusal = blockedBy({ team: "core", "x y": "1" }, prefix)?.fallbackRefusal;
+    expect(refusal).toContain('"\\u{430}de.kind"');
+    expect(refusal).not.toContain(cp(0x430));
+  });
+
   test("a well-formed prefix list leaves the fallback usable", () => {
     expect(decideWith({ team: "core", "x y": "1" }, "ade.kind, team/").status).toBe("fallback");
   });
@@ -682,5 +694,44 @@ describe("a screen that decided at render time follows a rule's expiry", () => {
     });
     vi.advanceTimersByTime(1_000);
     expect(ticks).toBe(0);
+  });
+});
+
+describe("a timestamp that names no real moment", () => {
+  const rule = (until: string) => ({ repository: "acme/api", until });
+
+  test.each([
+    ["a day past the end of the month", "2026-11-31T12:00Z"],
+    ["February 30", "2026-02-30T12:00:00Z"],
+    ["a leap day in a common year", "2027-02-29T12:00Z"],
+    ["month 13", "2026-13-01T12:00Z"],
+    ["day 0", "2026-11-00T12:00Z"],
+    ["hour 24", "2026-11-22T24:00Z"],
+    ["minute 60", "2026-11-22T12:60Z"],
+    ["second 60", "2026-11-22T12:00:60Z"],
+  ])("%s is refused when added and never applies", (_name, until) => {
+    expect(isRealTimestamp(until)).toBe(false);
+    expect(parseFallbackRuleInput(`acme/api ${until}`, NOW)).toHaveProperty("error");
+    expect(fallbackRuleStatus(rule(until), NOW)).toBe("not-a-date");
+    expect(describeFallbackStatus(rule(until), NOW)).toContain("not a real date");
+    expect(activeFallbackRule([rule(until)], "acme/api", NOW)).toBeUndefined();
+    expect(nextFallbackBoundary([rule(until)], NOW)).toBeNull();
+  });
+
+  test("a date V8 would roll over is named as not existing", () => {
+    for (const until of ["2026-11-31T12:00Z", "2026-02-30T12:00:00Z", "2027-02-29T12:00Z"]) {
+      expect(parseFallbackRuleInput(`acme/api ${until}`, NOW)).toEqual({
+        error: "That date does not exist.",
+      });
+    }
+  });
+
+  test("real moments still pass, including a leap day and an offset", () => {
+    for (const until of ["2028-02-29T12:00Z", "2026-11-22T23:59:59Z", "2026-11-22T07:00+01:00"]) {
+      expect(isRealTimestamp(until)).toBe(true);
+    }
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)}`, NOW)).toMatchObject({
+      rule: { repository: "acme/api" },
+    });
   });
 });
