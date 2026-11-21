@@ -396,6 +396,46 @@ describe("the launch refuses bad labels even from a caller that skipped its own 
   });
 });
 
+describe("a fallback rule that ends while the worktree is being prepared", () => {
+  const rule = { repository: "acme/api", until: new Date(NOW + 60_000).toISOString() };
+  const labels = { team: "core", "x y": "1" };
+
+  test("is checked again right before the agent is created", async () => {
+    const settings = settingsWith({ routingLabelFallbacks: [rule] });
+    const launch = fakeLaunch(settings);
+    let clock = NOW;
+    launch.deps.now = () => clock;
+    // A slow clone: two minutes pass, so the rule has ended when the workspace is ready.
+    const prepare = launch.deps.prepareCwd;
+    launch.deps.prepareCwd = async (input) => {
+      const prepared = await prepare(input);
+      clock += 120_000;
+      return prepared;
+    };
+    await expect(launchNewAgent(launch.deps, request({ labels }))).rejects.toBeInstanceOf(
+      RoutedLabelsBlockedError,
+    );
+    expect(launch.prepared).toEqual(["acme/api"]);
+    expect(launch.created).toEqual([]);
+  });
+
+  test("a rule still in force after a slow preparation launches as before", async () => {
+    const settings = settingsWith({ routingLabelFallbacks: [rule] });
+    const launch = fakeLaunch(settings);
+    let clock = NOW;
+    launch.deps.now = () => clock;
+    const prepare = launch.deps.prepareCwd;
+    launch.deps.prepareCwd = async (input) => {
+      const prepared = await prepare(input);
+      clock += 30_000;
+      return prepared;
+    };
+    const result = await launchNewAgent(launch.deps, request({ labels }));
+    expect(result.message).toContain("acme/api until");
+    expect(launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
+  });
+});
+
 describe("boundary: the registered routing handler to the launched agent", () => {
   const dirs: string[] = [];
   const stops: (() => void | Promise<void>)[] = [];

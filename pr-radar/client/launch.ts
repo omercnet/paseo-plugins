@@ -82,14 +82,16 @@ export async function launchNewAgent(
   if (!row.number) {
     throw new Error("An issue or pull request number is required to start a new agent.");
   }
-  const decision = decideRoutedLabels({
-    labels: request.overrides.labels,
-    repository: row.repository,
-    policy: deps.policy,
-    now: deps.now(),
-  });
-  if (decision.status === "blocked") {
-    throw new RoutedLabelsBlockedError(decision.message, decision.rejected);
+  const decide = () =>
+    decideRoutedLabels({
+      labels: request.overrides.labels,
+      repository: row.repository,
+      policy: deps.policy,
+      now: deps.now(),
+    });
+  const early = decide();
+  if (early.status === "blocked") {
+    throw new RoutedLabelsBlockedError(early.message, early.rejected);
   }
 
   const prepared = await deps.prepareCwd({
@@ -117,6 +119,12 @@ export async function launchNewAgent(
     profiles.find((candidate) => candidate.name.toLowerCase() === "model router") ??
     profiles[0];
 
+  // Preparing the worktree can be slow (a clone, a fetch), and a fallback rule may end meanwhile:
+  // decide again on the clock now, so an expired rule cannot launch an agent without its labels.
+  const decision = decide();
+  if (decision.status === "blocked") {
+    throw new RoutedLabelsBlockedError(decision.message, decision.rejected);
+  }
   const accepted = decision.status === "ok" ? decision.labels : {};
   const created = await targetWorkspace.agents.create({
     config: buildAgentConfig(profile, request.overrides),
