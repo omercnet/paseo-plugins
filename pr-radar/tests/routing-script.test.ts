@@ -17,6 +17,8 @@ import {
   type RoutingScriptLimits,
   resolveRoutingScript,
   runRoutingScriptHandler,
+  startRoutingScripts,
+  stopRoutingScripts,
   trustedScriptPath,
   waitForRoutingScriptIdleForTests,
 } from "../server/routing-script";
@@ -697,6 +699,59 @@ describe("runRoutingScriptHandler", () => {
       // Unshortened the call would have run for its own 1.2 s after waiting for the first one.
       expect(Date.now() - startedAt).toBeLessThan(1_700);
       await first;
+    });
+  });
+
+  describe("shutdown", () => {
+    // Settings the plugin was stopped under must not leak into the next test.
+    afterEach(() => {
+      startRoutingScripts();
+    });
+
+    test("ends a running script and its descendants, even one that ignores SIGTERM", async () => {
+      const root = makeRoot();
+      const pidFile = join(root, "pids.txt");
+      const stubborn = writeScript(
+        root,
+        "stubborn-stop.sh",
+        `trap '' TERM\nsleep 60 &\necho "$$ $!" > "${pidFile}"\nwhile :; do sleep 0.05; done`,
+      );
+      const running = route(
+        stubborn,
+        {},
+        { timeoutMs: 20_000, outputBytes: 1024, killGraceMs: 5_000 },
+      );
+      const failure = expect(running).rejects.toThrow(/shutting down/);
+      await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+      const started = Date.now();
+      await stopRoutingScripts();
+      await failure;
+      // Sent SIGKILL after the shutdown grace (1 s), not after its own 5 s grace or 20 s timeout.
+      expect(Date.now() - started).toBeLessThan(2_500);
+      for (const pid of readFileSync(pidFile, "utf8").trim().split(" ")) {
+        await expectGone(Number(pid));
+      }
+    });
+
+    test("refuses a later call, and a queued one never starts its script", async () => {
+      const root = makeRoot();
+      const log = join(root, "log.txt");
+      const first = writeScript(root, "first-stop.sh", `echo first >> "${log}"\nsleep 30`);
+      const second = writeScript(root, "second-stop.sh", `echo second >> "${log}"\necho '{}'`);
+      const limits = { timeoutMs: 20_000, outputBytes: 1024, killGraceMs: 200 };
+      const running = route(first, {}, limits);
+      const runningFailure = expect(running).rejects.toThrow(/shutting down/);
+      await vi.waitFor(() => expect(existsSync(log)).toBe(true));
+      const queuedFailure = expect(route(second, {}, limits)).rejects.toThrow(/shutting down/);
+      await stopRoutingScripts();
+      await runningFailure;
+      await queuedFailure;
+      await expect(route(second, {}, limits)).rejects.toThrow(/shutting down/);
+      expect(readFileSync(log, "utf8").trim()).toBe("first");
+    });
+
+    test("does nothing when no script is running", async () => {
+      await expect(stopRoutingScripts()).resolves.toBeUndefined();
     });
   });
 

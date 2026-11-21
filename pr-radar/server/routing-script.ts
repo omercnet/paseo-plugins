@@ -198,6 +198,8 @@ interface ScriptRun {
   result: Promise<string>;
   /** Resolves once the script's process group has exited or has been sent SIGKILL. */
   finished: Promise<void>;
+  /** Ends the script now (SIGTERM, then SIGKILL after a short grace) and fails `result`. */
+  stop(): void;
 }
 
 function startScriptCapped(
@@ -207,6 +209,7 @@ function startScriptCapped(
   path: string,
 ): ScriptRun {
   const finishedGate = Promise.withResolvers<void>();
+  let stop = () => {};
   const result = new Promise<string>((resolvePromise, rejectPromise) => {
     // Its own process group, so a timeout reaches the script's descendants too.
     let child: ChildProcessByStdio<Writable, Readable, Readable>;
@@ -249,15 +252,19 @@ function startScriptCapped(
       child.stderr.destroy();
       finish();
     }
-    function terminate(): void {
+    function terminate(graceMs = limits.killGraceMs): void {
       if (terminating) return;
       terminating = true;
       signalGroup("SIGTERM");
       killTimer = setTimeout(() => {
         signalGroup("SIGKILL");
         finishedGate.resolve();
-      }, limits.killGraceMs);
+      }, graceMs);
     }
+    stop = () => {
+      terminate(Math.min(limits.killGraceMs, SHUTDOWN_KILL_GRACE_MS));
+      settle(() => rejectPromise(new Error(ROUTING_STOPPED_MESSAGE)));
+    };
     function overCap(): void {
       terminate();
       settle(() =>
@@ -314,8 +321,13 @@ function startScriptCapped(
     child.stdin.on("error", () => {});
     child.stdin.end(`${JSON.stringify(payload)}\n`);
   });
-  return { result, finished: finishedGate.promise };
+  return { result, finished: finishedGate.promise, stop: () => stop() };
 }
+
+// The daemon waits 2 s for a plugin's cleanup before it signals the plugin process, so the script
+// must be gone sooner than that.
+const SHUTDOWN_KILL_GRACE_MS = 1_000;
+const ROUTING_STOPPED_MESSAGE = "The routing script was stopped because PR Radar is shutting down.";
 
 // One script runs at a time; up to this many further calls wait their turn, the rest are refused.
 const MAX_QUEUED_ROUTING_CALLS = 2;
@@ -328,6 +340,28 @@ const ROUTING_BUSY_MESSAGE = "A routing script is already running; try again whe
 let routingTail: Promise<void> = Promise.resolve();
 let routingInFlight = 0;
 let routingWaiting = 0;
+// The script now running, and whether the plugin has been told to stop.
+let activeRun: ScriptRun | undefined;
+let routingStopped = false;
+
+/**
+ * Plugin cleanup. The script runs in its own process group (so a timeout reaches its descendants),
+ * which also means the daemon stopping, reloading or disabling the plugin does not reach it: end
+ * it here, and refuse any call still waiting. Resolves once its process group is gone or has been
+ * sent SIGKILL. A daemon that is killed outright never runs this; the script then ends on its own.
+ */
+export async function stopRoutingScripts(): Promise<void> {
+  routingStopped = true;
+  const run = activeRun;
+  if (!run) return;
+  run.stop();
+  await run.finished;
+}
+
+/** Called when the plugin starts: a plugin process is fresh, and tests start it more than once. */
+export function startRoutingScripts(): void {
+  routingStopped = false;
+}
 
 export async function waitForRoutingScriptIdleForTests(): Promise<void> {
   for (let tail = routingTail; ; tail = routingTail) {
@@ -364,6 +398,7 @@ export async function runRoutingScriptHandler(
   if (process.platform === "win32") {
     throw new Error("Routing scripts are not supported on Windows.");
   }
+  if (routingStopped) throw new Error(ROUTING_STOPPED_MESSAGE);
   // Paseo gives a plugin request the same 30 s as one script run, so time spent queued comes out
   // of the run's own budget.
   const startedAt = performance.now();
@@ -404,6 +439,8 @@ export async function runRoutingScriptHandler(
       scriptPath = await withinBudget(preflight(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
     }
     const path = await withinBudget(trustedScriptPath(), budgetLeft(), ROUTING_PREFLIGHT_MESSAGE);
+    // A call that was waiting or reading settings when the plugin stopped must not start a script.
+    if (routingStopped) throw new Error(ROUTING_STOPPED_MESSAGE);
     // Taken last, after every await, so the script's own timer starts when the budget says. A first
     // call has spent time on its settings read and path checks too, so it is trimmed like a queued one.
     const remaining = budgetLeft();
@@ -415,7 +452,11 @@ export async function runRoutingScriptHandler(
     void previous.then(() => myTurn.resolve());
     throw error;
   }
-  void run.finished.then(() => myTurn.resolve());
+  activeRun = run;
+  void run.finished.then(() => {
+    if (activeRun === run) activeRun = undefined;
+    myTurn.resolve();
+  });
   const stdout = await run.result;
 
   if (!stdout) return {};
