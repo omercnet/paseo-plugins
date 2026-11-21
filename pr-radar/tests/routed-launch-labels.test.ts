@@ -1,7 +1,15 @@
-import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { applyAutoRouting, type LaunchDeps, launchNewAgent } from "../client/launch";
 import type { RadarRow } from "../client/radar";
 import type { StartAgentLaunchRequest } from "../client/start-agent-modal";
@@ -268,7 +276,7 @@ describe("the launch refuses bad labels even from a caller that skipped its own 
 
 describe("boundary: the registered routing handler to the launched agent", () => {
   const dirs: string[] = [];
-  const stops: (() => void)[] = [];
+  const stops: (() => void | Promise<void>)[] = [];
 
   afterEach(() => {
     for (const stop of stops.splice(0)) stop();
@@ -305,6 +313,22 @@ describe("boundary: the registered routing handler to the launched agent", () =>
     chmodSync(path, 0o755);
     return path;
   }
+
+  test("the cleanup the plugin returns ends a routing script that is still running", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "pr-radar-stop-")));
+    dirs.push(dir);
+    const pidFile = join(dir, "pid.txt");
+    const script = join(dir, "slow.sh");
+    writeFileSync(script, `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 60\n`);
+    chmodSync(script, 0o755);
+    const route = registeredRoute(script, settingsWith());
+    const failure = expect(route()).rejects.toThrow(/shutting down/);
+    await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true));
+    await stops.pop()?.();
+    await failure;
+    const pid = Number(readFileSync(pidFile, "utf8").trim());
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 3_000 });
+  });
 
   test("script labels reach the launched agent and pr-radar.cwd stays the workspace's own", async () => {
     const settings = settingsWith();
