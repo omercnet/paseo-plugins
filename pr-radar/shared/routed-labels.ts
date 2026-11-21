@@ -373,9 +373,11 @@ export function activeFallbackRule(
 // What a rule does: the repository without regard to case and the instant it ends, the same way
 // `activeFallbackRule` and `fallbackRuleStatus` read it. Two rules with the same target are the
 // same rule, whatever their spelling (`Acme/Api` and `acme/api`, `18:00Z` and `19:00+01:00`).
-// A timestamp that does not parse stays as written, so it matches only itself.
+// A timestamp that is not a real date stays as written, so it matches only itself: `Date.parse` in V8
+// rolls 2026-11-31 over to 2026-12-01, which would make a rule that never applies a duplicate of
+// one that does.
 export function fallbackRuleTarget(rule: Pick<LabelFallbackRule, "repository" | "until">): string {
-  const until = Date.parse(rule.until);
+  const until = isRealTimestamp(rule.until) ? Date.parse(rule.until) : Number.NaN;
   return `${rule.repository.toLowerCase()} ${Number.isFinite(until) ? until : `raw:${rule.until}`}`;
 }
 

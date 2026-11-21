@@ -407,6 +407,16 @@ describe("fallback rule list helpers", () => {
     ]);
   });
 
+  test("a date that does not exist is never the same rule as the day it rolls over to", () => {
+    // V8 reads 2026-11-31 as 2026-12-01; the first never applies and the second does.
+    const never = { ...ruleA, until: "2026-11-31T12:00Z" };
+    const real = { ...ruleA, until: "2026-12-01T12:00Z" };
+    expect(addFallbackRule([never], real)).toEqual([never, real]);
+    expect(addFallbackRule([real], never)).toEqual([real, never]);
+    // The same impossible date written twice is still one rule.
+    expect(addFallbackRule([never], { ...never })).toEqual([never]);
+  });
+
   test("add keeps rules that differ in repository or in end instant", () => {
     expect(addFallbackRule([ruleA], { ...ruleA, repository: "acme/other" })).toHaveLength(2);
     expect(addFallbackRule([ruleA], { ...ruleA, until: "2026-11-25T18:00:01Z" })).toHaveLength(2);
