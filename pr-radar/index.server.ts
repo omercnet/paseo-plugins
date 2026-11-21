@@ -1,5 +1,9 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { runRoutingScriptHandler } from "./server/routing-script";
+import {
+  runRoutingScriptHandler,
+  startRoutingScripts,
+  stopRoutingScripts,
+} from "./server/routing-script";
 import {
   acknowledgeViewerUpdates,
   resolveViewerScope,
@@ -20,6 +24,7 @@ import {
 } from "./shared/viewer-scope";
 
 export default function contribute(server: PluginServerContext) {
+  startRoutingScripts();
   const settings = server.registerSettings(prRadarSettings);
   // Directories and the routing script come from these registered settings, never from RPC input.
   const readSettings: ReadWorkspaceSettings = async () => {
@@ -36,5 +41,10 @@ export default function contribute(server: PluginServerContext) {
   server.handle(runRoutingScript, (input) => runRoutingScriptHandler(input, readSettings));
   // Keep GitHub data warm so opening the radar never waits on gh.
   const stop = startBackgroundRefresh();
-  return () => stop();
+  // Cleanup runs when the daemon stops, reloads or disables the plugin; the routing script is
+  // detached from the plugin process, so it is ended here.
+  return async () => {
+    stop();
+    await stopRoutingScripts();
+  };
 }
