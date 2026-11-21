@@ -269,7 +269,15 @@ function startScriptCapped(
       }, graceMs);
     }
     stop = () => {
-      terminate(Math.min(limits.killGraceMs, SHUTDOWN_KILL_GRACE_MS));
+      if (terminating) {
+        // A timeout or the output cap already sent SIGTERM and armed the full grace, which can
+        // outlast the host's own deadline: end the group now.
+        clearTimeout(killTimer);
+        signalGroup("SIGKILL");
+        finishedGate.resolve();
+      } else {
+        terminate(Math.min(limits.killGraceMs, SHUTDOWN_KILL_GRACE_MS));
+      }
       settle(() => rejectPromise(new Error(ROUTING_STOPPED_MESSAGE)));
     };
     function overCap(): void {

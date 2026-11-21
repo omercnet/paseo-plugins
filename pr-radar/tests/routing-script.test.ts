@@ -761,6 +761,29 @@ describe("runRoutingScriptHandler", () => {
       }
     });
 
+    test("kills at once a script that a timeout already asked to end and that ignores SIGTERM", async () => {
+      const root = makeRoot();
+      const pidFile = join(root, "pid2.txt");
+      const stubborn = writeScript(
+        root,
+        "stubborn-timeout.sh",
+        `trap '' TERM\necho $$ > "${pidFile}"\nwhile :; do sleep 0.05; done`,
+      );
+      // The timeout sends SIGTERM at 300 ms and would send SIGKILL 20 s later.
+      const timedOut = route(
+        stubborn,
+        {},
+        { timeoutMs: 300, outputBytes: 1024, killGraceMs: 20_000 },
+      );
+      await expect(timedOut).rejects.toThrow(/timed out/);
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      const started = Date.now();
+      await stopRoutingScripts();
+      expect(Date.now() - started).toBeLessThan(1_500);
+      await expectGone(pid);
+    });
+
     test("refuses a later call, and a queued one never starts its script", async () => {
       const root = makeRoot();
       const log = join(root, "log.txt");
