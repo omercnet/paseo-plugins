@@ -99,10 +99,16 @@ export const PrRadarSettingsSchema = z
 export type PrRadarSettings = z.infer<typeof PrRadarSettingsSchema>;
 
 // Version 2 (the label feature without fallback rules) dropped `routingLabelFallbacks`, and its
-// migration deleted that key from older documents. Rules are live again here, so a document saved
-// as version 1 keeps its rules and one saved as version 2 simply has none: both parse as they are.
-export function migratePrRadarSettings(values: unknown): unknown {
-  return values;
+// migration deleted that key from older documents. Rules are live again in version 3, but a
+// document saved before it (version 1, or 2 skipped by an upgrade) may hold rules that version 2
+// had already retired, so they are stripped here and fail closed: nobody gets a rule back that a
+// release in between removed. A version 3 document is not migrated and keeps its rules.
+export function migratePrRadarSettings(values: unknown, fromVersion: number): unknown {
+  if (fromVersion >= 3 || typeof values !== "object" || values === null || Array.isArray(values)) {
+    return values;
+  }
+  const { routingLabelFallbacks: _retired, ...kept } = values as Record<string, unknown>;
+  return kept;
 }
 
 export const prRadarSettings = defineSettings({

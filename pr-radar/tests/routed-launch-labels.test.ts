@@ -374,7 +374,7 @@ describe.each(PATHS)("settings saved by the label-only version, through %s", (_n
   // Version 2 documents carry no fallback field, so no rule is active after they load.
   test("they load with no rule and a rejected label set still blocks", async () => {
     const settings = PrRadarSettingsSchema.parse(
-      migratePrRadarSettings({ routingLabelPrefixes: "ade." }),
+      migratePrRadarSettings({ routingLabelPrefixes: "ade." }, 2),
     );
     expect(settings.routingLabelFallbacks).toEqual([]);
     const outcome = await launchVia(settings, {

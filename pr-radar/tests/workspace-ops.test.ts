@@ -32,18 +32,39 @@ import { RoutingScriptResultSchema } from "../shared/viewer-scope";
 describe("settings schema", () => {
   test("a document saved by the label-only version loads with no fallback rule", () => {
     const parsed = PrRadarSettingsSchema.parse(
-      migratePrRadarSettings({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" }),
+      migratePrRadarSettings({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" }, 2),
     );
+    expect(parsed.routingLabelFallbacks).toEqual([]);
+    expect(parsed.routingLabelPrefixes).toBe("ade.kind");
+    expect(parsed.sourceCodeDir).toBe("~/code");
+  });
+
+  // Version 2 retired the rules and deleted them from older documents. A document that skipped it
+  // (version 1) still holds them, and reading it as version 3 must not bring them back.
+  test.each([1, 2])("rules in a version %i document are stripped, not revived", (version) => {
+    const rule = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
+    const migrated = migratePrRadarSettings(
+      { routingLabelPrefixes: "ade.kind", routingLabelFallbacks: [rule] },
+      version,
+    );
+    expect(migrated).toEqual({ routingLabelPrefixes: "ade.kind" });
+    const parsed = PrRadarSettingsSchema.parse(migrated);
     expect(parsed.routingLabelFallbacks).toEqual([]);
     expect(parsed.routingLabelPrefixes).toBe("ade.kind");
   });
 
-  test("a document saved with fallback rules keeps them through migration", () => {
+  test("a version 3 document keeps its rules", () => {
     const rule = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
     const parsed = PrRadarSettingsSchema.parse(
-      migratePrRadarSettings({ routingLabelFallbacks: [rule] }),
+      migratePrRadarSettings({ routingLabelFallbacks: [rule] }, 3),
     );
     expect(parsed.routingLabelFallbacks).toEqual([rule]);
+  });
+
+  test("a document that is not an object passes through for the schema to refuse", () => {
+    for (const odd of [null, "x", [1]]) {
+      expect(migratePrRadarSettings(odd, 1)).toBe(odd);
+    }
   });
 
   test("the saved settings document is version 3 and migrates older ones", () => {
