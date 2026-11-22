@@ -30,6 +30,9 @@ export interface SettingsSaveQueueDeps<Values> {
 const RETRY_POLL_MS = 20;
 const RETRY_MAX_WAIT_MS = 1000;
 
+export const SAME_FIELD_CONFLICT_MESSAGE =
+  "Settings were not saved: another client changed the same setting. Review the updated value and apply your edit again.";
+
 // A clock that never steps back: a wall clock set backwards (a time sync, a manual change) would
 // keep the wait polling past its deadline and hold up every later save. Falls back to the wall
 // clock only where `performance` does not exist.
@@ -39,8 +42,31 @@ function monotonicNow(): number {
     : Date.now();
 }
 
+// Structural equality for plain JSON-like setting values (strings, primitives, arrays, objects),
+// treating missing keys and explicit `undefined` keys alike.
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, index) => sameValue(item, b[index]))
+    );
+  }
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const aKeys = Object.keys(aRecord).filter((key) => aRecord[key] !== undefined);
+  const bKeys = Object.keys(bRecord).filter((key) => bRecord[key] !== undefined);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => Object.hasOwn(bRecord, key) && sameValue(aRecord[key], bRecord[key]));
+}
+
 interface QueuedPatch<Values> {
   patch: SettingsPatch<Values>;
+  // Base values of the fields a plain patch expects to replace, captured when the edit was queued.
+  baseFields?: Partial<Values>;
   settle(saved: boolean): void;
 }
 
@@ -50,9 +76,11 @@ interface QueuedPatch<Values> {
  * function patch never sees a stale list. A write the host refuses is retried once when a newer
  * document has arrived, with every patch applied again to that document. A function patch must
  * therefore be pure and idempotent: a retry can run on a document that already holds its effect
- * (the host may have saved the write and lost the reply). A plain patch replaces its own fields,
- * so after a retry it wins over another client's edit of the same field. Each caller learns whether
- * the write holding its own patch succeeded.
+ * (the host may have saved the write and lost the reply). A plain patch refuses to retry if the
+ * server's current value for any field it touches differs from the base value the edit started
+ * from (unless the server already holds this edit's value, as after a lost reply), so a stale
+ * client can never silently overwrite another client's change to the same field. Each caller
+ * learns whether the write holding its own patch succeeded.
  */
 export function createSettingsSaveQueue<Values extends object>(
   deps: SettingsSaveQueueDeps<Values>,
@@ -92,6 +120,13 @@ export function createSettingsSaveQueue<Values extends object>(
 
   async function writeBatch(batch: QueuedPatch<Values>[]): Promise<boolean> {
     deps.report(null);
+    const plainBase = new Map<keyof Values, unknown>();
+    for (const { baseFields } of batch) {
+      if (!baseFields) continue;
+      for (const key of Object.keys(baseFields) as Array<keyof Values>) {
+        if (!plainBase.has(key)) plainBase.set(key, baseFields[key]);
+      }
+    }
     let base = deps.latest();
     for (let attempt = 0; attempt < 2; attempt++) {
       let next = base.values;
@@ -103,9 +138,29 @@ export function createSettingsSaveQueue<Values extends object>(
         deps.report(parsed.message);
         return false;
       }
+      for (const [key, expected] of plainBase) {
+        const current = base.values[key];
+        if (!sameValue(expected, current) && !sameValue(parsed.data[key], current)) {
+          deps.report(SAME_FIELD_CONFLICT_MESSAGE);
+          return false;
+        }
+      }
       const written = await deps.write(parsed.data, base.revision);
       if (written !== false) {
         deps.remember(parsed.data);
+        // Carry this client's own accepted plain-field writes forward as the expected base for any
+        // follow-up edits already queued while this write was in flight (for example rapid typing).
+        for (const [key, expected] of plainBase) {
+          for (const pending of queue) {
+            if (
+              pending.baseFields &&
+              Object.hasOwn(pending.baseFields, key) &&
+              sameValue(pending.baseFields[key], expected)
+            ) {
+              pending.baseFields[key] = parsed.data[key];
+            }
+          }
+        }
         return true;
       }
       // Refused. The host says no more than "false" for a stale revision, a document it rejects
@@ -125,7 +180,16 @@ export function createSettingsSaveQueue<Values extends object>(
 
   return (patch) =>
     new Promise<boolean>((resolve) => {
-      queue.push({ patch, settle: resolve });
+      let baseFields: Partial<Values> | undefined;
+      if (typeof patch !== "function") {
+        const current = deps.latest().values;
+        const snapshot: Partial<Values> = {};
+        for (const key of Object.keys(patch) as Array<keyof Values>) {
+          snapshot[key] = current[key];
+        }
+        baseFields = snapshot;
+      }
+      queue.push({ patch, baseFields, settle: resolve });
       chain = chain.then(flush);
     });
 }

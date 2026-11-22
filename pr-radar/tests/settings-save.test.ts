@@ -4,6 +4,7 @@ import {
   createSettingsSaveQueue,
   fallbackRuleAdder,
   removeFallbackRule,
+  SAME_FIELD_CONFLICT_MESSAGE,
   type SettingsParse,
 } from "../client/settings-save";
 import { DEFAULT_PR_RADAR_SETTINGS, type LabelFallbackRule } from "../shared/settings";
@@ -379,6 +380,129 @@ describe("settings save queue", () => {
     expect(saved).toBe(false);
     expect(host.attempts).toHaveLength(0);
     expect(host.reports.at(-1)).toBe("too long");
+  });
+
+  test("two clients: a stale plain-field retry is refused when another client changed that field", async () => {
+    let stored = {
+      values: { ...empty, routingLabelPrefixes: "ade." },
+      revision: 1,
+    };
+    const makeClient = () => {
+      let rendered = { values: stored.values, revision: String(stored.revision) };
+      const reports: Array<string | null> = [];
+      const attempts: Array<{ values: Doc; revision: string; accepted: boolean }> = [];
+      const render = () => {
+        rendered = { values: stored.values, revision: String(stored.revision) };
+      };
+      const save = createSettingsSaveQueue<Doc>({
+        latest: () => rendered,
+        remember: (values) => {
+          rendered = { values, revision: rendered.revision };
+        },
+        parse: (values) => ({ success: true, data: values }),
+        write: async (values, revision) => {
+          const accepted = revision === String(stored.revision);
+          attempts.push({ values, revision, accepted });
+          if (accepted) stored = { values, revision: stored.revision + 1 };
+          return accepted;
+        },
+        report: (message) => reports.push(message),
+        wait: async () => {
+          render();
+        },
+        now: () => 0,
+      });
+      return { save, reports, attempts, render };
+    };
+
+    const clientA = makeClient();
+    const clientB = makeClient();
+
+    // Client B saves a newer downgrade prefix list first.
+    expect(await clientB.save({ routingLabelPrefixes: "ade.kind" })).toBe(true);
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind");
+
+    // Client A still holds revision 1 ("ade.") and tries to replace the same field.
+    expect(await clientA.save({ routingLabelPrefixes: "team/" })).toBe(false);
+    // Only the initial stale write ran; no retry overwrote client B's list.
+    expect(clientA.attempts).toHaveLength(1);
+    expect(clientA.attempts[0]?.accepted).toBe(false);
+    expect(clientA.reports.at(-1)).toBe(SAME_FIELD_CONFLICT_MESSAGE);
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind");
+
+    // Once client A has seen B's value (rendered during the conflict wait), re-applying succeeds.
+    expect(await clientA.save({ routingLabelPrefixes: "ade.kind, team/" })).toBe(true);
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind, team/");
+  });
+
+  test("two clients: a stale plain-field retry still succeeds when another client edited a different field", async () => {
+    const host = fakeHost({ ...empty, routingLabelPrefixes: "ade." });
+    const mine = host.save({ routingLabelPrefixes: "ade.kind" });
+    const write = await host.nextWrite();
+    // Another client only added a fallback rule; routingLabelPrefixes stayed "ade.".
+    host.otherClientSaves({
+      ...empty,
+      routingLabelPrefixes: "ade.",
+      routingLabelFallbacks: [ruleB],
+    });
+    write.reply();
+    expect(await host.finishAll(mine)).toEqual([true]);
+    expect(host.stored()).toMatchObject({
+      routingLabelPrefixes: "ade.kind",
+      routingLabelFallbacks: [ruleB],
+    });
+  });
+
+  test("rapid edits by the same client to the same plain field both succeed", async () => {
+    const host = fakeHost(empty);
+    const first = host.save({ routingLabelPrefixes: "a" });
+    const write = await host.nextWrite();
+    const second = host.save({ routingLabelPrefixes: "ad" });
+    write.reply();
+    expect(await host.finishAll(first, second)).toEqual([true, true]);
+    expect(host.stored().routingLabelPrefixes).toBe("ad");
+    expect(host.reports.filter((report) => report !== null)).toEqual([]);
+  });
+
+  test("a queued plain edit refuses if another client changed that field while an earlier write was in flight", async () => {
+    const host = fakeHost({ ...empty, routingLabelPrefixes: "ade." });
+    const addRule = host.save(add(ruleA));
+    const write = await host.nextWrite();
+    // User edits prefixes while seeing "ade." and while add(ruleA) is still in flight.
+    const editPrefixes = host.save({ routingLabelPrefixes: "team/" });
+    // Another client saves a newer prefix list before add(ruleA) lands.
+    host.otherClientSaves({ ...empty, routingLabelPrefixes: "ade.kind" });
+    write.reply();
+    expect(await host.finishAll(addRule, editPrefixes)).toEqual([true, false]);
+    expect(host.stored()).toMatchObject({
+      routingLabelPrefixes: "ade.kind",
+      routingLabelFallbacks: [ruleA],
+    });
+    expect(host.reports.at(-1)).toBe(SAME_FIELD_CONFLICT_MESSAGE);
+  });
+
+  test("a lost reply on a plain-field write does not falsely conflict on retry", async () => {
+    const host = fakeHost({ ...empty, routingLabelPrefixes: "ade." });
+    host.loseNextReply();
+    const saved = host.save({ routingLabelPrefixes: "team/" });
+    expect(await host.finishAll(saved)).toEqual([true]);
+    expect(host.stored().routingLabelPrefixes).toBe("team/");
+    expect(host.reports.filter((report) => report !== null)).toEqual([]);
+  });
+
+  test("a full reset refuses when another client added a fallback rule in the meantime", async () => {
+    const host = fakeHost({ ...empty, routingLabelPrefixes: "ade." });
+    const reset = host.save({ ...empty });
+    const write = await host.nextWrite();
+    host.otherClientSaves({
+      ...empty,
+      routingLabelPrefixes: "ade.",
+      routingLabelFallbacks: [ruleB],
+    });
+    write.reply();
+    expect(await host.finishAll(reset)).toEqual([false]);
+    expect(host.stored().routingLabelFallbacks).toEqual([ruleB]);
+    expect(host.reports.at(-1)).toBe(SAME_FIELD_CONFLICT_MESSAGE);
   });
 });
 
