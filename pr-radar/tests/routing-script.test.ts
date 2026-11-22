@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative as relativePath } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   type RoutingScriptLimits,
@@ -396,6 +396,24 @@ describe("runRoutingScriptHandler", () => {
       "/usr/bin",
     );
     await expect(trustedScriptPath(undefined, ["bin", "./", ""])).resolves.toBe("");
+  });
+
+  test("never keeps a relative PATH entry that resolves to a trusted directory", async () => {
+    // The entries above are dropped by the trust check too when the checkout is group-writable,
+    // so they cannot tell a skipped entry from a rejected one. This directory passes the check, and
+    // a relative spelling of it reaches it from whatever the working directory is.
+    const root = makeRoot();
+    const trusted = join(root, "trusted");
+    mkdirSync(trusted);
+    chmodSync(trusted, 0o755);
+    const uid = process.getuid?.();
+    // The temp root's own ancestors are marked settled, so only the directory under test decides.
+    const settled = () => new Set([root]);
+    const relative = relativePath(process.cwd(), trusted);
+    expect(isAbsolute(relative)).toBe(false);
+    expect(await trustedScriptPath(uid, [trusted], settled())).toBe(trusted);
+    expect(await trustedScriptPath(uid, [relative], settled())).toBe("");
+    expect(await trustedScriptPath(uid, [relative, trusted], settled())).toBe(trusted);
   });
 
   test("runs the script from a fixed directory, not the daemon's", async () => {
