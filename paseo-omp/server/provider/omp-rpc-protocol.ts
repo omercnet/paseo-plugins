@@ -171,6 +171,10 @@ export const OMP_RPC_COMMAND_POLICIES = {
   set_cache_warming: "unsupported",
   set_slow_mode: "unsupported",
   steer_subagent: "implemented",
+  // Added in OMP 19.1.0.
+  abort_and_deliver_queue: "unsupported",
+  resume: "unsupported",
+  get_model_picker: "unsupported",
 } as const;
 export const OMP_RPC_RESPONSE_POLICIES = OMP_RPC_COMMAND_POLICIES;
 export const OMP_PROTOCOL_VIOLATION_CATEGORIES = [
