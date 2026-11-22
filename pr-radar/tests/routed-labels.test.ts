@@ -501,6 +501,17 @@ describe("fallback rules", () => {
     expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix${cp(0x202e)}it`, NOW)).toEqual({
       error: "The note may not hold control or invisible characters.",
     });
+    // Edge Unicode whitespace / BOM must not be stripped by `.trim()` before validation.
+    expect(parseFallbackRuleInput(`${cp(0xfeff)}* ${iso(DAY)}`, NOW)).toHaveProperty("error");
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)}${cp(0xfeff)}`, NOW)).toHaveProperty(
+      "error",
+    );
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix${cp(0xfeff)}`, NOW)).toEqual({
+      error: "The note may not hold control or invisible characters.",
+    });
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix${cp(0x2028)}`, NOW)).toEqual({
+      error: "The note may not hold control or invisible characters.",
+    });
   });
 });
 

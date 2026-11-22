@@ -472,9 +472,10 @@ export type ParsedFallbackRule = { rule: LabelFallbackRule } | { error: string }
 
 // "owner/name 2026-11-25T18:00Z optional note": the add-rule field in settings.
 export function parseFallbackRuleInput(input: string, now: number): ParsedFallbackRule {
-  // Fields are separated by ASCII space or tab only, never `\s`: a U+FEFF or U+00A0 between two
-  // fields would split them where the screen shows one word.
-  const [repository, until, ...noteWords] = input.trim().split(/[ \t]+/);
+  // Fields are separated and edge-trimmed by ASCII space or tab only, never `\s` or `.trim()`:
+  // U+FEFF, U+00A0 or U+2028 would otherwise split a single word or disappear from the ends before
+  // validation sees them.
+  const [repository, until, ...noteWords] = input.replace(/^[ \t]+|[ \t]+$/g, "").split(/[ \t]+/);
   if (!repository || !until) {
     return {
       error:

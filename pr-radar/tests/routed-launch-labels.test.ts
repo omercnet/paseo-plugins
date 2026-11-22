@@ -385,6 +385,69 @@ describe.each(PATHS)("settings saved by the label-only version, through %s", (_n
   });
 });
 
+describe.each(PATHS)(
+  "stored settings file with malformed prefixes loaded through migration and parse, via %s",
+  (_name, launchVia) => {
+    const dirs: string[] = [];
+
+    afterEach(() => {
+      for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    function loadStoredSettings(values: Record<string, unknown>, version = 3): PrRadarSettings {
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), "pr-radar-stored-settings-")));
+      dirs.push(dir);
+      const file = join(dir, "pr-radar.json");
+      writeFileSync(file, JSON.stringify({ version, values }), "utf8");
+      const envelope = JSON.parse(readFileSync(file, "utf8")) as {
+        version: number;
+        values: unknown;
+      };
+      return PrRadarSettingsSchema.parse(migratePrRadarSettings(envelope.values, envelope.version));
+    }
+
+    test.each([
+      ["trailing byte-order mark", `team/,${cp(0xfeff)}`],
+      ["leading byte-order mark", `${cp(0xfeff)}team/`],
+      ["trailing no-break space", `team/,${cp(0xa0)}`],
+      ["trailing line separator", `team/,${cp(0x2028)}`],
+      ["trailing ideographic space", `team/,${cp(0x3000)}`],
+      ["trailing vertical tab", "team/,\v"],
+      ["trailing form feed", "team/,\f"],
+      ["mid-entry byte-order mark", `a${cp(0xfeff)}de.kind`],
+    ])("refuses fallback when stored prefixes hold a %s", async (_label, rawPrefixes) => {
+      const settings = loadStoredSettings({
+        routingLabelPrefixes: rawPrefixes,
+        routingLabelFallbacks: [
+          { repository: "acme/api", until: new Date(NOW + DAY).toISOString(), note: "active" },
+        ],
+      });
+      const outcome = await launchVia(settings, {
+        labels: { "ade.kind": "external-review", "x y": "1" },
+      });
+      expect(outcome.launched).toBe(false);
+      expect(outcome.message).toMatch(/cannot drop it|cannot be used until it is fixed/);
+      expect(outcome.launch.prepared).toEqual([]);
+      expect(outcome.launch.opened).toEqual([]);
+      expect(outcome.launch.created).toEqual([]);
+    });
+
+    test("keeps ASCII edge padding usable when stored prefixes are otherwise valid", async () => {
+      const settings = loadStoredSettings({
+        routingLabelPrefixes: "  ade.kind, team/\t\r\n",
+        routingLabelFallbacks: [
+          { repository: "acme/api", until: new Date(NOW + DAY).toISOString(), note: "active" },
+        ],
+      });
+      const outcome = await launchVia(settings, {
+        labels: { other: "val", "x y": "1" },
+      });
+      expect(outcome.launched).toBe(true);
+      expect(outcome.launch.created).toHaveLength(1);
+    });
+  },
+);
+
 describe("the launch refuses bad labels even from a caller that skipped its own check", () => {
   test("launchNewAgent throws before preparing a worktree", async () => {
     const launch = fakeLaunch(settingsWith());

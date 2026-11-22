@@ -17,7 +17,6 @@ export const LabelFallbackRuleSchema = z
   .object({
     repository: z
       .string()
-      .trim()
       .max(256)
       .regex(/^(\*|[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)$/, "Use owner/name or *."),
     until: z
@@ -82,10 +81,11 @@ export const PrRadarSettingsSchema = z
       .default(DEFAULT_PR_RADAR_SETTINGS.routingScriptPath),
     // Label key prefixes the routing script may use as-is, separated by commas or spaces (for
     // example `ade.`). Every other script label is stored as `pr-radar.route.<key>`. Never admits
-    // `pr-radar`, `pr-radar.*`, `paseo` or `paseo.*`.
+    // `pr-radar`, `pr-radar.*`, `paseo` or `paseo.*`. Kept raw (no `.trim()`): JS `.trim()` strips
+    // Unicode whitespace and U+FEFF at the edges, which would hide a malformed entry like
+    // `"team/,\uFEFF"` from the fallback guard; ASCII separators are handled by `splitPrefixes`.
     routingLabelPrefixes: z
       .string()
-      .trim()
       .max(1_024)
       .default(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes),
     // Temporary rules that let a launch proceed without script labels when they are invalid.
