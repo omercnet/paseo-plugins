@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 vi.mock("@getpaseo/plugin/client", () => ({ usePaseo: vi.fn() }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ useToast: vi.fn() }));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ useToast: vi.fn() }));
 vi.mock("react-native", () => ({
   ActivityIndicator: "ActivityIndicator",
   Pressable: "Pressable",
