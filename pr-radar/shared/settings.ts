@@ -9,6 +9,21 @@ export type AutoLaunchMode = (typeof AUTO_LAUNCH_MODES)[number];
 
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 
+// Unicode general categories Cc (C0, DEL and C1 controls), Cf (format characters: bidi controls
+// such as U+202A-U+202E and U+2066-U+2069 used by Trojan Source, CVE-2021-42574, zero-width
+// U+200B-U+200F, U+2060-U+2064, U+FEFF, tag characters), Cs (lone surrogates), Zl and Zp.
+// Default_Ignorable_Code_Point adds invisible fillers (U+3164, U+115F, U+FFA0) and variation selectors.
+export const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
+export const ESCAPED_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+export const FALLBACK_NOTE_UNSAFE_ERROR = "The note may not hold control or invisible characters.";
+
+// Shared validator for fallback rule notes (add-rule input and persisted settings). Runs on the
+// raw text before any trim, so leading/trailing BOM, bidi or control characters cannot slip past.
+export function fallbackNoteProblem(rawNote: string): string | null {
+  return UNSAFE_CHARS.test(rawNote) ? FALLBACK_NOTE_UNSAFE_ERROR : null;
+}
+
 // A short-term rule that lets a launch go ahead without the routing script's labels when the
 // script returns invalid ones. `repository` is `owner/name` or `*`; `until` is an ISO-8601
 // timestamp with an offset. Only rules that expire within the next week are honored (see
@@ -23,7 +38,14 @@ export const LabelFallbackRuleSchema = z
       .string()
       .regex(ISO_TIMESTAMP, "Use an ISO-8601 timestamp with a time zone, e.g. 2026-11-25T18:00Z.")
       .refine((value) => Number.isFinite(Date.parse(value)), "Not a real date."),
-    note: z.string().trim().max(256).optional(),
+    note: z
+      .string()
+      .refine((value) => fallbackNoteProblem(value) === null, {
+        message: FALLBACK_NOTE_UNSAFE_ERROR,
+      })
+      .trim()
+      .max(256)
+      .optional(),
   })
   .strict();
 
@@ -43,6 +65,18 @@ export const DEFAULT_PR_RADAR_SETTINGS = {
   routingLabelPrefixes: "",
   routingLabelFallbacks: [] as LabelFallbackRule[],
 } as const;
+
+// Drops stored fallback rules whose note holds control or invisible characters before item
+// validation runs, so a hand-edited settings file fails closed (the rule is dropped, consistent
+// with the pre-v3 strip) without discarding the rest of the user's settings.
+function dropUnsafeNoteRules(value: unknown): unknown {
+  if (!Array.isArray(value) || value.length > 32) return value;
+  return value.filter((entry) => {
+    if (typeof entry !== "object" || entry === null) return true;
+    const note = (entry as { note?: unknown }).note;
+    return typeof note !== "string" || fallbackNoteProblem(note) === null;
+  });
+}
 
 export const PrRadarSettingsSchema = z
   .object({
@@ -89,9 +123,9 @@ export const PrRadarSettingsSchema = z
       .max(1_024)
       .default(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes),
     // Temporary rules that let a launch proceed without script labels when they are invalid.
+    // A stored rule whose note fails `fallbackNoteProblem` is dropped on load (fail closed).
     routingLabelFallbacks: z
-      .array(LabelFallbackRuleSchema)
-      .max(32)
+      .preprocess(dropUnsafeNoteRules, z.array(LabelFallbackRuleSchema).max(32))
       .default(() => [...DEFAULT_PR_RADAR_SETTINGS.routingLabelFallbacks]),
   })
   .strict();

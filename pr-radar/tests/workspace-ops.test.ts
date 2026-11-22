@@ -23,6 +23,8 @@ import {
 import { labelPrefixesProblem } from "../shared/routed-labels";
 import {
   DEFAULT_PR_RADAR_SETTINGS,
+  FALLBACK_NOTE_UNSAFE_ERROR,
+  LabelFallbackRuleSchema,
   migratePrRadarSettings,
   PrRadarSettingsSchema,
   prRadarSettings,
@@ -59,6 +61,40 @@ describe("settings schema", () => {
       migratePrRadarSettings({ routingLabelFallbacks: [rule] }, 3),
     );
     expect(parsed.routingLabelFallbacks).toEqual([rule]);
+  });
+
+  test("LabelFallbackRuleSchema rejects notes with control or invisible characters before trimming", () => {
+    const base = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
+    for (const note of [
+      "fix\u202Eit",
+      "fix\u0007",
+      "fix\uFEFF",
+      "\uFEFFfix",
+      "fix\u2028",
+      "fix\nit",
+    ]) {
+      const parsed = LabelFallbackRuleSchema.safeParse({ ...base, note });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues[0]?.message).toBe(FALLBACK_NOTE_UNSAFE_ERROR);
+      }
+    }
+    const clean = LabelFallbackRuleSchema.safeParse({ ...base, note: "  fixing route.py  " });
+    expect(clean).toEqual({
+      success: true,
+      data: { ...base, note: "fixing route.py" },
+    });
+  });
+
+  test("a hand-edited document drops rules whose note holds control or invisible characters", () => {
+    const bad = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: "fix\u202Eit" };
+    const good = { repository: "acme/web", until: "2099-01-01T00:00:00.000Z", note: "safe note" };
+    const parsed = PrRadarSettingsSchema.parse({
+      routingLabelPrefixes: "ade.kind",
+      routingLabelFallbacks: [bad, good],
+    });
+    expect(parsed.routingLabelPrefixes).toBe("ade.kind");
+    expect(parsed.routingLabelFallbacks).toEqual([good]);
   });
 
   test("a document that is not an object passes through for the schema to refuse", () => {

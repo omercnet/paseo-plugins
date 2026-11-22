@@ -1,4 +1,10 @@
-import { type LabelFallbackRule, LabelFallbackRuleSchema } from "./settings";
+import {
+  ESCAPED_CHARS,
+  fallbackNoteProblem,
+  type LabelFallbackRule,
+  LabelFallbackRuleSchema,
+  UNSAFE_CHARS,
+} from "./settings";
 
 // Labels a routing script asks for. The script sees PR text on stdin, so its output is untrusted:
 // every label is validated all or nothing, and a bad set blocks the launch instead of dropping
@@ -14,12 +20,6 @@ const MAX_FALLBACK_MS = MAX_FALLBACK_DAYS * 24 * 60 * 60 * 1_000;
 const MAX_SHOWN_KEY_LEN = 64;
 
 const LABEL_KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-// Unicode general categories Cc (C0, DEL and C1 controls), Cf (format characters: bidi controls
-// such as U+202A-U+202E and U+2066-U+2069 used by Trojan Source, CVE-2021-42574, zero-width
-// U+200B-U+200F, U+2060-U+2064, U+FEFF, tag characters), Cs (lone surrogates), Zl and Zp.
-// Default_Ignorable_Code_Point adds invisible fillers (U+3164, U+115F, U+FFA0) and variation selectors.
-const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
-const ESCAPED_CHARS = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 // A script that returns more raw keys than this is rejected before any per-key work.
 const MAX_RAW_LABELS = MAX_SCRIPT_LABELS * 4;
 const MAX_LISTED_REJECTIONS = 5;
@@ -484,8 +484,9 @@ export function parseFallbackRuleInput(input: string, now: number): ParsedFallba
   }
   const note = noteWords.join(" ");
   // The note is shown in the launch warning, so a bidi override in it could reorder that text.
-  if (UNSAFE_CHARS.test(note)) {
-    return { error: "The note may not hold control or invisible characters." };
+  const noteIssue = fallbackNoteProblem(note);
+  if (noteIssue) {
+    return { error: noteIssue };
   }
   const parsed = LabelFallbackRuleSchema.safeParse({
     repository,

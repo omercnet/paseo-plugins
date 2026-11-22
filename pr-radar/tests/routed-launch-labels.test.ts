@@ -445,6 +445,34 @@ describe.each(PATHS)(
       expect(outcome.launched).toBe(true);
       expect(outcome.launch.created).toHaveLength(1);
     });
+
+    test.each([
+      ["bidi override", `fix${cp(0x202e)}it`],
+      ["ASCII control character", "fix\u0007it"],
+      ["trailing byte-order mark", `fix${cp(0xfeff)}`],
+    ])(
+      "drops a hand-edited stored fallback rule whose note holds a %s (fail closed)",
+      async (_label, unsafeNote) => {
+        const settings = loadStoredSettings({
+          routingLabelPrefixes: "ade.kind",
+          routingLabelFallbacks: [
+            {
+              repository: "acme/api",
+              until: new Date(NOW + DAY).toISOString(),
+              note: unsafeNote,
+            },
+          ],
+        });
+        expect(settings.routingLabelFallbacks).toEqual([]);
+        const outcome = await launchVia(settings, {
+          labels: { other: "val", "x y": "1" },
+        });
+        expect(outcome.launched).toBe(false);
+        expect(outcome.launch.prepared).toEqual([]);
+        expect(outcome.launch.opened).toEqual([]);
+        expect(outcome.launch.created).toEqual([]);
+      },
+    );
   },
 );
 
