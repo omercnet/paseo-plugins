@@ -8,15 +8,15 @@
       "name": "@omercnet/paseo-omp",
       "version": "5.8.0",
       "dependencies": {
-        "@getpaseo/protocol": "0.17.0-beta.1",
+        "@getpaseo/protocol": "0.17.1",
         "@modelcontextprotocol/sdk": "1.32.2",
         "yaml": "^2.9.0"
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.17.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.17.0-beta.1.tgz",
-      "integrity": "sha512-vCb+WV944xEvuat4I4jQMRa5UX1bwkEe2QJF2RjPnSrkywt0WqwK69E7R5WYMRWIdM6lZ7rlK8jeh5oMgaZjew==",
+      "version": "0.17.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.17.1.tgz",
+      "integrity": "sha512-lKonGktprQXIBPr89vvljejrRfI2W2prHpuwZ5LfjVtfRGdikQyikgEG24s5O3oAN0w4aD8SDFGchzBtIYSFyQ==",
       "license": "Apache-2.0",
       "dependencies": {
         "semver": "^7.8.5",
@@ -611,9 +611,9 @@
       }
     },
     "node_modules/hono": {
-      "version": "4.13.19",
-      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.19.tgz",
-      "integrity": "sha512-KmXvQAXwcAHV+muzbIwoJ23niEB5nMoDVr9WcRkU8mvjUECm/1+7v4Jgp7P7a+H6MLFrh+vXrGonGrGS+RQfkA==",
+      "version": "4.13.20",
+      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.20.tgz",
+      "integrity": "sha512-xo6gecEJQ+CjTtOUUbcLHE8CdRKMeF4qITe+DT+OhFnSUmZR/ZBa9XavAfiGh4HlukmlaHFdaK4dz5tkTYFNmA==",
       "license": "MIT",
       "engines": {
         "node": ">=16.9.0"
@@ -881,9 +881,9 @@
       }
     },
     "node_modules/pkce-challenge": {
-      "version": "5.0.1",
-      "resolved": "https://registry.npmjs.org/pkce-challenge/-/pkce-challenge-5.0.1.tgz",
-      "integrity": "sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==",
+      "version": "5.0.2",
+      "resolved": "https://registry.npmjs.org/pkce-challenge/-/pkce-challenge-5.0.2.tgz",
+      "integrity": "sha512-vCc54+qyIfKC5e2UN28AZKElwqjLINgiIV3RKI8pDu93TjaAJoB3QrgMzEBouy8yOKsXVXdAinO1QArJf9x5WA==",
       "license": "MIT",
       "engines": {
         "node": ">=16.20.0"
