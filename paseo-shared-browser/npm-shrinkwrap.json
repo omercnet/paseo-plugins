@@ -8,7 +8,7 @@
       "name": "@omercnet/paseo-shared-browser",
       "version": "4.2.0",
       "dependencies": {
-        "@getpaseo/plugin": "0.17.0-beta.1",
+        "@getpaseo/plugin": "0.17.1",
         "@modelcontextprotocol/sdk": "1.32.2",
         "agent-browser": "0.43.0",
         "esbuild": "0.28.2",
@@ -545,22 +545,22 @@
       }
     },
     "node_modules/@getpaseo/client": {
-      "version": "0.17.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/client/-/client-0.17.0-beta.1.tgz",
-      "integrity": "sha512-+/1vctpcgVVCIRkcHxrVUxqhwbwOdHNhzb2sMjOXFXpcZqONishS4Z3ikR3U4E3U0WZM/nh0GbewZ9HEHjNFMQ==",
+      "version": "0.17.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/client/-/client-0.17.1.tgz",
+      "integrity": "sha512-wAG5mIVK0gUymzRFvLJFqXDndPCKIq25f86Y/Hh/ak1D8OD/LiDl6q0Fr2BPatbLJRscS8gXq5C70lbFZ3MMag==",
       "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
-        "@getpaseo/protocol": "0.17.0-beta.1",
-        "@getpaseo/relay": "0.17.0-beta.1",
+        "@getpaseo/protocol": "0.17.1",
+        "@getpaseo/relay": "0.17.1",
         "ws": "^8.20.0",
         "zod": "^4.4.3"
       }
     },
     "node_modules/@getpaseo/plugin": {
-      "version": "0.17.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/plugin/-/plugin-0.17.0-beta.1.tgz",
-      "integrity": "sha512-1tU0f/1wGSRtYVv2cyCyjOAHUomE0XTFcR2MSEdT7Iyxv94q6NEK0tb53Qygt7d7lv/kVHU3G9AlFdoHxd9fXw==",
+      "version": "0.17.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/plugin/-/plugin-0.17.1.tgz",
+      "integrity": "sha512-CSHAbz1VJDePMP4hMRg/bhEERejYt3QVhcwPDkyEAC0wcy8UT84+J1iur8nITMSOC63eqfBGBaZg0nuuN1LOyQ==",
       "license": "Apache-2.0",
       "dependencies": {
         "@agentclientprotocol/sdk": "^1.4.0",
@@ -568,8 +568,8 @@
         "use-sync-external-store": "^1.6.0"
       },
       "peerDependencies": {
-        "@getpaseo/client": "0.17.0-beta.1",
-        "@getpaseo/protocol": "0.17.0-beta.1",
+        "@getpaseo/client": "0.17.1",
+        "@getpaseo/protocol": "0.17.1",
         "react": ">=19.1.0 <20",
         "react-native": ">=0.81.5",
         "zod": "^4.4.3"
@@ -581,9 +581,9 @@
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.17.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.17.0-beta.1.tgz",
-      "integrity": "sha512-vCb+WV944xEvuat4I4jQMRa5UX1bwkEe2QJF2RjPnSrkywt0WqwK69E7R5WYMRWIdM6lZ7rlK8jeh5oMgaZjew==",
+      "version": "0.17.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.17.1.tgz",
+      "integrity": "sha512-lKonGktprQXIBPr89vvljejrRfI2W2prHpuwZ5LfjVtfRGdikQyikgEG24s5O3oAN0w4aD8SDFGchzBtIYSFyQ==",
       "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
@@ -592,9 +592,9 @@
       }
     },
     "node_modules/@getpaseo/relay": {
-      "version": "0.17.0-beta.1",
-      "resolved": "https://registry.npmjs.org/@getpaseo/relay/-/relay-0.17.0-beta.1.tgz",
-      "integrity": "sha512-jEQB8jxkEJtA7w9ez4RrFbp7xmE8VHLkhHieP9PgBAVThNaERtqbgVnkTBjCle7ZpaQhq/eippZYsDK28U5c0w==",
+      "version": "0.17.1",
+      "resolved": "https://registry.npmjs.org/@getpaseo/relay/-/relay-0.17.1.tgz",
+      "integrity": "sha512-sMzT/oHsc+U5Y58w0aeLKcjcMcqTBvguJyVyvFfrrSMP2b2lGYQ2Ptq5zwdN50ZdBT13La0yfOW8qOTKtYQa4w==",
       "license": "Apache-2.0",
       "peer": true,
       "dependencies": {
@@ -1320,9 +1320,9 @@
       }
     },
     "node_modules/hono": {
-      "version": "4.13.19",
-      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.19.tgz",
-      "integrity": "sha512-KmXvQAXwcAHV+muzbIwoJ23niEB5nMoDVr9WcRkU8mvjUECm/1+7v4Jgp7P7a+H6MLFrh+vXrGonGrGS+RQfkA==",
+      "version": "4.13.20",
+      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.20.tgz",
+      "integrity": "sha512-xo6gecEJQ+CjTtOUUbcLHE8CdRKMeF4qITe+DT+OhFnSUmZR/ZBa9XavAfiGh4HlukmlaHFdaK4dz5tkTYFNmA==",
       "license": "MIT",
       "engines": {
         "node": ">=16.9.0"
@@ -1618,9 +1618,9 @@
       }
     },
     "node_modules/pkce-challenge": {
-      "version": "5.0.1",
-      "resolved": "https://registry.npmjs.org/pkce-challenge/-/pkce-challenge-5.0.1.tgz",
-      "integrity": "sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ==",
+      "version": "5.0.2",
+      "resolved": "https://registry.npmjs.org/pkce-challenge/-/pkce-challenge-5.0.2.tgz",
+      "integrity": "sha512-vCc54+qyIfKC5e2UN28AZKElwqjLINgiIV3RKI8pDu93TjaAJoB3QrgMzEBouy8yOKsXVXdAinO1QArJf9x5WA==",
       "license": "MIT",
       "engines": {
         "node": ">=16.20.0"
