@@ -40,9 +40,16 @@ import {
 } from "./agent-launch-options";
 import {
   createSettingsSaveQueue,
+  editFieldDraft,
   fallbackRuleAdder,
+  finishFieldSave,
+  initFieldState,
   removeFallbackRule,
+  resyncFieldToServer,
   type SettingsPatch,
+  type SettingsSaveOptions,
+  syncFieldFromServer,
+  type UncontrolledFieldState,
 } from "./settings-save";
 
 type ReadySettings = Extract<SettingsState<typeof prRadarSettings.schema>, { status: "ready" }>;
@@ -80,8 +87,29 @@ function ReadyPrRadarSettings({
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
   const [error, setError] = useState<string | null>(null);
-  // Remounts the prefix input after a reset: it only reads its initial value once.
-  const [prefixInputKey, setPrefixInputKey] = useState(0);
+  // Tracks the uncontrolled prefix input's mounted/synced base value, local draft and conflict
+  // state. Kept in a ref alongside React state so rapid keystrokes always read the latest base.
+  const [prefixField, setPrefixField] = useState<UncontrolledFieldState>(() =>
+    initFieldState(settings.values.routingLabelPrefixes),
+  );
+  const prefixFieldRef = useRef(prefixField);
+  const prefixInFlightRef = useRef(0);
+  const updatePrefixField = (
+    updater: (state: UncontrolledFieldState) => UncontrolledFieldState,
+  ) => {
+    const next = updater(prefixFieldRef.current);
+    prefixFieldRef.current = next;
+    setPrefixField(next);
+  };
+  useEffect(() => {
+    updatePrefixField((state) =>
+      syncFieldFromServer(
+        state,
+        settings.values.routingLabelPrefixes,
+        prefixInFlightRef.current > 0,
+      ),
+    );
+  }, [settings.values.routingLabelPrefixes]);
   const [ruleText, setRuleText] = useState("");
   const [ruleError, setRuleError] = useState<string | null>(null);
   const [ruleInputKey, setRuleInputKey] = useState(0);
@@ -154,14 +182,70 @@ function ReadyPrRadarSettings({
             };
       },
       write: (values, revision) => settingsRef.current.save(values, revision),
-      report: setError,
+      report: (message) => {
+        if (message !== null || !prefixFieldRef.current.conflicted) {
+          setError(message);
+        }
+      },
+      onConflict: (keys) => {
+        if (keys.includes("routingLabelPrefixes")) {
+          updatePrefixField((state) => ({
+            ...state,
+            server: latestSettingsRef.current.values.routingLabelPrefixes,
+            conflicted: true,
+          }));
+        }
+      },
     }),
   );
 
   // A plain patch replaces fields; a function patch is applied to the newest saved document, so
   // list edits (fallback rules) never build on a list that an in-flight save already changed.
-  function savePatch(patch: SettingsPatch<PrRadarSettings>): Promise<boolean> {
-    return saveQueue(patch);
+  function savePatch(
+    patch: SettingsPatch<PrRadarSettings>,
+    options?: SettingsSaveOptions<PrRadarSettings>,
+  ): Promise<boolean> {
+    return saveQueue(patch, options);
+  }
+
+  async function savePrefixValue(next: string, base: string) {
+    prefixInFlightRef.current += 1;
+    try {
+      const saved = await savePatch(
+        { routingLabelPrefixes: next },
+        { base: { routingLabelPrefixes: base } },
+      );
+      const serverNow = latestSettingsRef.current.values.routingLabelPrefixes;
+      const conflicted = !saved && serverNow !== base;
+      updatePrefixField((state) =>
+        finishFieldSave({ ...state, server: serverNow }, next, saved, conflicted),
+      );
+      if (saved) setError(null);
+    } finally {
+      prefixInFlightRef.current -= 1;
+    }
+  }
+
+  function handlePrefixChange(next: string) {
+    const base = prefixFieldRef.current.base;
+    updatePrefixField((state) => editFieldDraft(state, next));
+    void savePrefixValue(next, base);
+  }
+
+  function handlePrefixResync() {
+    updatePrefixField((state) =>
+      resyncFieldToServer({
+        ...state,
+        server: latestSettingsRef.current.values.routingLabelPrefixes,
+      }),
+    );
+    setError(null);
+  }
+
+  function handlePrefixReapply() {
+    const currentServer = latestSettingsRef.current.values.routingLabelPrefixes;
+    const draft = prefixFieldRef.current.draft;
+    void savePrefixValue(draft, currentServer);
   }
 
   async function handleAddRule() {
@@ -188,9 +272,16 @@ function ReadyPrRadarSettings({
 
   async function handleReset() {
     setDirQueryText(DEFAULT_PR_RADAR_SETTINGS.sourceCodeDir);
-    const saved = await savePatch({ ...DEFAULT_PR_RADAR_SETTINGS });
+    const saved = await savePatch(
+      { ...DEFAULT_PR_RADAR_SETTINGS },
+      { base: { routingLabelPrefixes: prefixFieldRef.current.base } },
+    );
     if (saved) {
-      setPrefixInputKey((key) => key + 1);
+      updatePrefixField((state) => ({
+        ...initFieldState(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes),
+        mountKey: state.mountKey + 1,
+      }));
+      setError(null);
       toast.show("PR Radar settings reset to defaults.", { variant: "success" });
     }
   }
@@ -313,12 +404,36 @@ function ReadyPrRadarSettings({
           <SettingsInput
             label="Allowed label prefixes"
             hint="Routing script labels that one of these (comma or space separated) admits keep their name. A prefix admits itself, keys that continue it with . or / (ade.kind admits ade.kind.x, not ade.kinder), and every key under a prefix that ends in . or / (ade. admits ade.anything). Prefer the narrowest prefix, such as ade.kind. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
-            key={prefixInputKey}
-            error={labelPrefixesProblem(settings.values.routingLabelPrefixes)}
-            initialValue={settings.values.routingLabelPrefixes}
+            key={prefixField.mountKey}
+            error={
+              prefixField.conflicted
+                ? `Another client updated Allowed label prefixes to ${prefixField.server ? `"${prefixField.server}"` : "(empty)"}. Your edit above was not saved.`
+                : labelPrefixesProblem(settings.values.routingLabelPrefixes)
+            }
+            initialValue={prefixField.base}
             placeholder="None: all script labels go under pr-radar.route."
-            onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
+            onChangeText={handlePrefixChange}
           />
+          {prefixField.conflicted ? (
+            <>
+              <SettingsAction
+                label="Load updated label prefixes"
+                hint={
+                  prefixField.server
+                    ? `Replace your unsaved edit with "${prefixField.server}"`
+                    : "Replace your unsaved edit with the empty server value"
+                }
+                actionLabel="Use latest"
+                onPress={handlePrefixResync}
+              />
+              <SettingsAction
+                label="Apply your label prefixes"
+                hint="Save the text above over the updated server value"
+                actionLabel="Re-apply edit"
+                onPress={handlePrefixReapply}
+              />
+            </>
+          ) : null}
           {settings.values.routingLabelFallbacks.map((rule) => (
             <SettingsAction
               key={`${rule.repository}-${rule.until}-${rule.note ?? ""}`}

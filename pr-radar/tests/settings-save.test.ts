@@ -2,10 +2,15 @@ import { describe, expect, test, vi } from "vitest";
 import {
   addFallbackRule,
   createSettingsSaveQueue,
+  editFieldDraft,
   fallbackRuleAdder,
+  finishFieldSave,
+  initFieldState,
   removeFallbackRule,
+  resyncFieldToServer,
   SAME_FIELD_CONFLICT_MESSAGE,
   type SettingsParse,
+  syncFieldFromServer,
 } from "../client/settings-save";
 import { DEFAULT_PR_RADAR_SETTINGS, type LabelFallbackRule } from "../shared/settings";
 
@@ -503,6 +508,185 @@ describe("settings save queue", () => {
     expect(await host.finishAll(reset)).toEqual([false]);
     expect(host.stored().routingLabelFallbacks).toEqual([ruleB]);
     expect(host.reports.at(-1)).toBe(SAME_FIELD_CONFLICT_MESSAGE);
+  });
+
+  test("uncontrolled input: external change then keystroke then Backspace is refused and does not revert B", async () => {
+    let stored = {
+      values: { ...empty, routingLabelPrefixes: "ade." },
+      revision: 1,
+    };
+    let renderedA = { values: stored.values, revision: "1" };
+    const reportsA: Array<string | null> = [];
+    const writesA: Array<{ values: Doc; revision: string }> = [];
+    const saveA = createSettingsSaveQueue<Doc>({
+      latest: () => renderedA,
+      remember: (values) => {
+        renderedA = { values, revision: renderedA.revision };
+      },
+      parse: (values) => ({ success: true, data: values }),
+      write: async (values, revision) => {
+        writesA.push({ values, revision });
+        const accepted = revision === String(stored.revision);
+        if (accepted) stored = { values, revision: stored.revision + 1 };
+        return accepted;
+      },
+      report: (message) => reportsA.push(message),
+      wait: async () => {
+        renderedA = { values: stored.values, revision: String(stored.revision) };
+      },
+      now: () => 0,
+    });
+
+    // Client A mounts its uncontrolled input showing "ade.".
+    let fieldA = initFieldState("ade.");
+
+    // Client B narrows prefixes to "ade.kind" and Client A's latest() updates to rev 2 while its
+    // uncontrolled input still shows "ade." (before any resync).
+    stored = { values: { ...empty, routingLabelPrefixes: "ade.kind" }, revision: 2 };
+    renderedA = { values: stored.values, revision: "2" };
+
+    // Client A types `x` ("ade.x"): passes the input's base ("ade."), not latest() ("ade.kind").
+    fieldA = editFieldDraft(fieldA, "ade.x");
+    const savedX = await saveA(
+      { routingLabelPrefixes: "ade.x" },
+      { base: { routingLabelPrefixes: fieldA.base } },
+    );
+    fieldA = finishFieldSave(fieldA, "ade.x", savedX, !savedX);
+    expect(savedX).toBe(false);
+    expect(fieldA.conflicted).toBe(true);
+    expect(fieldA.base).toBe("ade.");
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind");
+
+    // Client A presses Backspace back to "ade.": must still be refused and never revert B.
+    fieldA = editFieldDraft(fieldA, "ade.");
+    const savedBackspace = await saveA(
+      { routingLabelPrefixes: "ade." },
+      { base: { routingLabelPrefixes: fieldA.base } },
+    );
+    fieldA = finishFieldSave(fieldA, "ade.", savedBackspace, !savedBackspace);
+    expect(savedBackspace).toBe(false);
+    expect(fieldA.conflicted).toBe(true);
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind");
+    expect(writesA).toHaveLength(0);
+    // The conflict message stayed visible across both attempts (report(null) was never called).
+    expect(reportsA).toEqual([SAME_FIELD_CONFLICT_MESSAGE, SAME_FIELD_CONFLICT_MESSAGE]);
+  });
+
+  test("uncontrolled input: a refusal is not defeated by subsequent keystrokes until resynced or re-applied", async () => {
+    let stored = {
+      values: { ...empty, routingLabelPrefixes: "ade." },
+      revision: 1,
+    };
+    let renderedA = { values: stored.values, revision: "1" };
+    const reportsA: Array<string | null> = [];
+    const writesA: Array<{ values: Doc; revision: string; accepted: boolean }> = [];
+    const saveA = createSettingsSaveQueue<Doc>({
+      latest: () => renderedA,
+      remember: (values) => {
+        renderedA = { values, revision: renderedA.revision };
+      },
+      parse: (values) => ({ success: true, data: values }),
+      write: async (values, revision) => {
+        const accepted = revision === String(stored.revision);
+        writesA.push({ values, revision, accepted });
+        if (accepted) stored = { values, revision: stored.revision + 1 };
+        return accepted;
+      },
+      report: (message) => reportsA.push(message),
+      wait: async () => {
+        renderedA = { values: stored.values, revision: String(stored.revision) };
+      },
+      now: () => 0,
+    });
+
+    let fieldA = initFieldState("ade.");
+
+    // B saves "ade.kind" while A is still at rev 1.
+    stored = { values: { ...empty, routingLabelPrefixes: "ade.kind" }, revision: 2 };
+
+    // First keystroke on stale rev 1: server rejects attempt 0, retry conflicts on rev 2.
+    fieldA = editFieldDraft(fieldA, "team/");
+    const first = await saveA(
+      { routingLabelPrefixes: "team/" },
+      { base: { routingLabelPrefixes: fieldA.base } },
+    );
+    fieldA = finishFieldSave(
+      syncFieldFromServer(fieldA, renderedA.values.routingLabelPrefixes, false),
+      "team/",
+      first,
+      !first,
+    );
+    expect(first).toBe(false);
+    expect(fieldA.conflicted).toBe(true);
+    expect(fieldA.server).toBe("ade.kind");
+    expect(fieldA.draft).toBe("team/");
+    expect(fieldA.mountKey).toBe(0);
+    expect(writesA).toHaveLength(1);
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind");
+
+    // Next keystrokes must keep failing without writing or clearing the conflict message.
+    for (const nextText of ["team/a", "team/ab", "ade.kind"]) {
+      fieldA = editFieldDraft(fieldA, nextText);
+      const ok = await saveA(
+        { routingLabelPrefixes: nextText },
+        { base: { routingLabelPrefixes: fieldA.base } },
+      );
+      fieldA = finishFieldSave(fieldA, nextText, ok, !ok);
+      expect(ok).toBe(false);
+      expect(fieldA.conflicted).toBe(true);
+    }
+    expect(writesA).toHaveLength(1);
+    expect(reportsA.every((msg) => msg === SAME_FIELD_CONFLICT_MESSAGE)).toBe(true);
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind");
+
+    // Explicitly re-applying against the shown server value succeeds and clears the conflict.
+    fieldA = editFieldDraft(fieldA, "ade.kind, team/");
+    const reapplied = await saveA(
+      { routingLabelPrefixes: fieldA.draft },
+      { base: { routingLabelPrefixes: fieldA.server } },
+    );
+    fieldA = finishFieldSave(fieldA, fieldA.draft, reapplied, !reapplied);
+    expect(reapplied).toBe(true);
+    expect(fieldA.conflicted).toBe(false);
+    expect(fieldA.base).toBe("ade.kind, team/");
+    expect(stored.values.routingLabelPrefixes).toBe("ade.kind, team/");
+    expect(reportsA.at(-1)).toBeNull();
+  });
+
+  test("uncontrolled input resyncs on external change with no local edit, and preserves local edits otherwise", () => {
+    const initial = initFieldState("ade.");
+
+    // External update with no local edit and nothing in flight: resync and bump mountKey.
+    const synced = syncFieldFromServer(initial, "ade.kind", false);
+    expect(synced).toEqual({
+      base: "ade.kind",
+      draft: "ade.kind",
+      server: "ade.kind",
+      mountKey: 1,
+      conflicted: false,
+    });
+
+    // External update while user has an unsaved local edit: keep base, draft and mountKey, record server.
+    const edited = editFieldDraft(synced, "ade.kind, team/");
+    const kept = syncFieldFromServer(edited, "org.", false);
+    expect(kept).toEqual({
+      base: "ade.kind",
+      draft: "ade.kind, team/",
+      server: "org.",
+      mountKey: 1,
+      conflicted: false,
+    });
+
+    // Explicit resync replaces the draft with the server value, bumps mountKey and clears conflict.
+    const conflicted = finishFieldSave(kept, "ade.kind, team/", false, true);
+    expect(conflicted.conflicted).toBe(true);
+    expect(resyncFieldToServer(conflicted)).toEqual({
+      base: "org.",
+      draft: "org.",
+      server: "org.",
+      mountKey: 2,
+      conflicted: false,
+    });
   });
 });
 

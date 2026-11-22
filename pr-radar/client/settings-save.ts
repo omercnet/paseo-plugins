@@ -7,6 +7,15 @@ import { fallbackRuleTarget } from "../shared/routed-labels";
  */
 export type SettingsPatch<Values> = Partial<Values> | ((latest: Values) => Partial<Values>);
 
+export interface SettingsSaveOptions<Values> {
+  /**
+   * Field values the caller's UI input was built from (mount, last resync, or this client's own
+   * accepted write). For uncontrolled inputs, pass this so conflict detection checks against what
+   * the user actually saw rather than `deps.latest()` at enqueue time.
+   */
+  base?: Partial<Values>;
+}
+
 export type SettingsParse<Values> =
   | { success: true; data: Values }
   | { success: false; message: string };
@@ -19,8 +28,10 @@ export interface SettingsSaveQueueDeps<Values> {
   parse(values: Values): SettingsParse<Values>;
   /** Writes the whole document against `revision`; resolves false on a concurrent change. */
   write(values: Values, revision: string): Promise<boolean>;
-  /** Called with null when a write starts and with a message when it fails. */
+  /** Called with null when a write succeeds and with a message when it fails or conflicts. */
   report(message: string | null): void;
+  /** Called with the conflicting field keys whenever a plain patch is refused for a same-field conflict. */
+  onConflict?(keys: Array<keyof Values>): void;
   /** Sleeps; replaceable so a test controls the clock. Defaults to setTimeout. */
   wait?(ms: number): Promise<void>;
   /** A monotonic time in milliseconds that bounds the wait; replaceable like `wait`. Defaults to performance.now. */
@@ -76,15 +87,23 @@ interface QueuedPatch<Values> {
  * function patch never sees a stale list. A write the host refuses is retried once when a newer
  * document has arrived, with every patch applied again to that document. A function patch must
  * therefore be pure and idempotent: a retry can run on a document that already holds its effect
- * (the host may have saved the write and lost the reply). A plain patch refuses to retry if the
- * server's current value for any field it touches differs from the base value the edit started
- * from (unless the server already holds this edit's value, as after a lost reply), so a stale
- * client can never silently overwrite another client's change to the same field. Each caller
- * learns whether the write holding its own patch succeeded.
+ * (the host may have saved the write and lost the reply).
+ *
+ * Plain-patch conflict guarantee: for every key touched by a plain patch, the queue compares the
+ * server's current value against the expected base value (`options.base[key]` when provided by the
+ * caller, otherwise `deps.latest().values[key]` when the patch was queued). On attempt 0, any
+ * mismatch refuses immediately without writing; on retry (attempt 1), a mismatch refuses unless
+ * the server already holds this batch's own parsed value (the lost-reply case). Refused writes do
+ * not call `deps.report(null)`, so an existing conflict message stays visible while the conflict
+ * stands. For uncontrolled inputs, callers must supply the input's mounted or last-synced value in
+ * `options.base` (for example via `initFieldState` / `syncFieldFromServer` / `finishFieldSave`)
+ * and advance it only on resync or this client's own accepted write; without an explicit base, the
+ * queue only sees `deps.latest()` at enqueue time. Each caller learns whether the write holding
+ * its own patch succeeded.
  */
 export function createSettingsSaveQueue<Values extends object>(
   deps: SettingsSaveQueueDeps<Values>,
-): (patch: SettingsPatch<Values>) => Promise<boolean> {
+): (patch: SettingsPatch<Values>, options?: SettingsSaveOptions<Values>) => Promise<boolean> {
   let queue: QueuedPatch<Values>[] = [];
   let chain: Promise<void> = Promise.resolve();
 
@@ -119,7 +138,6 @@ export function createSettingsSaveQueue<Values extends object>(
   }
 
   async function writeBatch(batch: QueuedPatch<Values>[]): Promise<boolean> {
-    deps.report(null);
     const plainBase = new Map<keyof Values, unknown>();
     for (const { baseFields } of batch) {
       if (!baseFields) continue;
@@ -138,16 +156,23 @@ export function createSettingsSaveQueue<Values extends object>(
         deps.report(parsed.message);
         return false;
       }
+      const conflicts: Array<keyof Values> = [];
       for (const [key, expected] of plainBase) {
         const current = base.values[key];
-        if (!sameValue(expected, current) && !sameValue(parsed.data[key], current)) {
-          deps.report(SAME_FIELD_CONFLICT_MESSAGE);
-          return false;
+        const isLostReplyMatch = attempt > 0 && sameValue(parsed.data[key], current);
+        if (!sameValue(expected, current) && !isLostReplyMatch) {
+          conflicts.push(key);
         }
+      }
+      if (conflicts.length > 0) {
+        deps.onConflict?.(conflicts);
+        deps.report(SAME_FIELD_CONFLICT_MESSAGE);
+        return false;
       }
       const written = await deps.write(parsed.data, base.revision);
       if (written !== false) {
         deps.remember(parsed.data);
+        deps.report(null);
         // Carry this client's own accepted plain-field writes forward as the expected base for any
         // follow-up edits already queued while this write was in flight (for example rapid typing).
         for (const [key, expected] of plainBase) {
@@ -178,20 +203,95 @@ export function createSettingsSaveQueue<Values extends object>(
     return false;
   }
 
-  return (patch) =>
+  return (patch, options) =>
     new Promise<boolean>((resolve) => {
       let baseFields: Partial<Values> | undefined;
       if (typeof patch !== "function") {
         const current = deps.latest().values;
+        const explicitBase = options?.base;
         const snapshot: Partial<Values> = {};
         for (const key of Object.keys(patch) as Array<keyof Values>) {
-          snapshot[key] = current[key];
+          snapshot[key] =
+            explicitBase && Object.hasOwn(explicitBase, key) ? explicitBase[key] : current[key];
         }
         baseFields = snapshot;
       }
       queue.push({ patch, baseFields, settle: resolve });
       chain = chain.then(flush);
     });
+}
+
+/**
+ * Tracks an uncontrolled text input's base value, local draft, server value, remount key and
+ * conflict state. `base` advances only on resync (external update with no local edit, or explicit
+ * user resync) or after this client's own accepted write, so an uncontrolled input never silently
+ * reverts an external update on a later keystroke.
+ */
+export interface UncontrolledFieldState {
+  base: string;
+  draft: string;
+  server: string;
+  mountKey: number;
+  conflicted: boolean;
+}
+
+export function initFieldState(server: string): UncontrolledFieldState {
+  return { base: server, draft: server, server, mountKey: 0, conflicted: false };
+}
+
+// Called when the host delivers a new server value for the field. If this client holds no unsaved
+// edit, no in-flight save and no standing conflict, resync and bump `mountKey` so the uncontrolled
+// input displays the new value. Otherwise preserve the local edit, base and conflict state while
+// recording the latest server value so the UI can show it.
+export function syncFieldFromServer(
+  state: UncontrolledFieldState,
+  server: string,
+  inFlight: boolean,
+): UncontrolledFieldState {
+  if (server === state.server) return state;
+  const hasUnsaved = state.conflicted || inFlight || state.draft !== state.base;
+  if (!hasUnsaved) {
+    return {
+      base: server,
+      draft: server,
+      server,
+      mountKey: state.mountKey + 1,
+      conflicted: false,
+    };
+  }
+  return { ...state, server };
+}
+
+export function editFieldDraft(
+  state: UncontrolledFieldState,
+  next: string,
+): UncontrolledFieldState {
+  return { ...state, draft: next };
+}
+
+export function finishFieldSave(
+  state: UncontrolledFieldState,
+  written: string,
+  saved: boolean,
+  conflicted: boolean,
+): UncontrolledFieldState {
+  if (saved) {
+    return { ...state, base: written, conflicted: false };
+  }
+  if (conflicted) {
+    return { ...state, conflicted: true };
+  }
+  return state;
+}
+
+export function resyncFieldToServer(state: UncontrolledFieldState): UncontrolledFieldState {
+  return {
+    base: state.server,
+    draft: state.server,
+    server: state.server,
+    mountKey: state.mountKey + 1,
+    conflicted: false,
+  };
 }
 
 interface RuleIdentity {
