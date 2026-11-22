@@ -1,6 +1,5 @@
 import type { PluginSidebarItemProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
-import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import { Icon, SidebarRow } from "@getpaseo/plugin/client/ui";
 import { Text, View } from "react-native";
 import { formatPercent, formatRate, type Level, levelColor, loadLevel } from "./format";
 import { SCREEN_ID, useUsage } from "./usage";

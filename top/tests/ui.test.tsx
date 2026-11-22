@@ -14,8 +14,7 @@ vi.mock("react-native", () => ({
   ScrollView: "ScrollView",
   Pressable: "Pressable",
 }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({ Icon: "Icon" }));
-vi.mock("@getpaseo/plugin/client/ui", () => ({ SidebarRow: "SidebarRow" }));
+vi.mock("@getpaseo/plugin/client/ui", () => ({ Icon: "Icon", SidebarRow: "SidebarRow" }));
 vi.mock("../client/gauge", () => ({ Dial: () => null, Sparkline: () => null }));
 vi.mock("../client/usage", () => ({ SCREEN_ID: "usage", useUsage: vi.fn() }));
 

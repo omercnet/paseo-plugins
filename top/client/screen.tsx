@@ -1,6 +1,6 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import type { ReactNode } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { HISTORY_EVERY_MS, HISTORY_LENGTH, type Sample } from "../shared/usage";
