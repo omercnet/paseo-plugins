@@ -447,19 +447,22 @@ describe.each(PATHS)(
     });
 
     test.each([
-      ["bidi override", `fix${cp(0x202e)}it`],
-      ["ASCII control character", "fix\u0007it"],
-      ["trailing byte-order mark", `fix${cp(0xfeff)}`],
+      ["bidi override in note", { repository: "acme/api", note: `fix${cp(0x202e)}it` }],
+      ["ASCII control character in note", { repository: "acme/api", note: "fix\u0007it" }],
+      ["trailing byte-order mark in note", { repository: "acme/api", note: `fix${cp(0xfeff)}` }],
+      ["leading BOM in repository", { repository: `${cp(0xfeff)}*`, note: "active" }],
+      ["edge space in repository", { repository: " acme/api ", note: "active" }],
+      ["over-long note", { repository: "acme/api", note: "x".repeat(257) }],
+      ["non-string note", { repository: "acme/api", note: 42 }],
     ])(
-      "drops a hand-edited stored fallback rule whose note holds a %s (fail closed)",
-      async (_label, unsafeNote) => {
+      "drops a hand-edited stored fallback rule with %s (fail closed)",
+      async (_label, badFields) => {
         const settings = loadStoredSettings({
           routingLabelPrefixes: "ade.kind",
           routingLabelFallbacks: [
             {
-              repository: "acme/api",
               until: new Date(NOW + DAY).toISOString(),
-              note: unsafeNote,
+              ...badFields,
             },
           ],
         });

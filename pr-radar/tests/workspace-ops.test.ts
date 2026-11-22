@@ -86,15 +86,36 @@ describe("settings schema", () => {
     });
   });
 
-  test("a hand-edited document drops rules whose note holds control or invisible characters", () => {
-    const bad = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: "fix\u202Eit" };
+  test("a hand-edited document drops any invalid fallback rule while keeping valid settings, and still refuses non-arrays or >32 entries", () => {
     const good = { repository: "acme/web", until: "2099-01-01T00:00:00.000Z", note: "safe note" };
+    const invalidRules: unknown[] = [
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: "fix\u202Eit" },
+      { repository: " acme/api", until: "2099-01-01T00:00:00.000Z" },
+      { repository: "\uFEFF*", until: "2099-01-01T00:00:00.000Z" },
+      { repository: "acme/api\n", until: "2099-01-01T00:00:00.000Z" },
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: 123 },
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: "x".repeat(257) },
+      { repository: "acme/api", until: "not-a-date" },
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", extra: true },
+      "not-an-object",
+    ];
     const parsed = PrRadarSettingsSchema.parse({
       routingLabelPrefixes: "ade.kind",
-      routingLabelFallbacks: [bad, good],
+      routingLabelFallbacks: [...invalidRules, good],
     });
     expect(parsed.routingLabelPrefixes).toBe("ade.kind");
     expect(parsed.routingLabelFallbacks).toEqual([good]);
+
+    // Non-arrays and lists over 32 entries are still rejected.
+    expect(PrRadarSettingsSchema.safeParse({ routingLabelFallbacks: "bad" }).success).toBe(false);
+    const overLimit = Array.from({ length: 33 }, () => ({
+      repository: "acme/api",
+      until: "2099-01-01T00:00:00.000Z",
+      note: "fix\u202Eit",
+    }));
+    expect(PrRadarSettingsSchema.safeParse({ routingLabelFallbacks: overLimit }).success).toBe(
+      false,
+    );
   });
 
   test("a document that is not an object passes through for the schema to refuse", () => {

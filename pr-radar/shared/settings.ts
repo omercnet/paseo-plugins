@@ -66,16 +66,13 @@ export const DEFAULT_PR_RADAR_SETTINGS = {
   routingLabelFallbacks: [] as LabelFallbackRule[],
 } as const;
 
-// Drops stored fallback rules whose note holds control or invisible characters before item
-// validation runs, so a hand-edited settings file fails closed (the rule is dropped, consistent
-// with the pre-v3 strip) without discarding the rest of the user's settings.
-function dropUnsafeNoteRules(value: unknown): unknown {
+// Drops any stored fallback rule that fails `LabelFallbackRuleSchema` (unsafe note, edge
+// whitespace in repository, non-string or over-long note, unknown keys, etc.) so one bad rule
+// fails closed (consistent with the pre-v3 strip) without invalidating the rest of the saved
+// settings. Non-arrays and lists over 32 entries still fail schema validation.
+function dropInvalidFallbackRules(value: unknown): unknown {
   if (!Array.isArray(value) || value.length > 32) return value;
-  return value.filter((entry) => {
-    if (typeof entry !== "object" || entry === null) return true;
-    const note = (entry as { note?: unknown }).note;
-    return typeof note !== "string" || fallbackNoteProblem(note) === null;
-  });
+  return value.filter((entry) => LabelFallbackRuleSchema.safeParse(entry).success);
 }
 
 export const PrRadarSettingsSchema = z
@@ -123,9 +120,9 @@ export const PrRadarSettingsSchema = z
       .max(1_024)
       .default(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes),
     // Temporary rules that let a launch proceed without script labels when they are invalid.
-    // A stored rule whose note fails `fallbackNoteProblem` is dropped on load (fail closed).
+    // Any stored rule that fails `LabelFallbackRuleSchema` is dropped on load (fail closed).
     routingLabelFallbacks: z
-      .preprocess(dropUnsafeNoteRules, z.array(LabelFallbackRuleSchema).max(32))
+      .preprocess(dropInvalidFallbackRules, z.array(LabelFallbackRuleSchema).max(32))
       .default(() => [...DEFAULT_PR_RADAR_SETTINGS.routingLabelFallbacks]),
   })
   .strict();
