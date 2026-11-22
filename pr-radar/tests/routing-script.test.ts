@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative as relativePath } from "node:path";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   type RoutingScriptLimits,
@@ -409,8 +409,16 @@ describe("runRoutingScriptHandler", () => {
     const uid = process.getuid?.();
     // The temp root's own ancestors are marked settled, so only the directory under test decides.
     const settled = () => new Set([root]);
-    const relative = relativePath(process.cwd(), trusted);
+    // Climb to the filesystem root first, so the entry reaches `trusted` from the working directory
+    // and from "/" alike. A shorter climb (a path relative to the cwd) is looked up from "/" by the
+    // symbolic link check, where `..` stays at "/", and would miss the directory whenever the cwd
+    // and the temp root share an ancestor other than "/": the entry would then be dropped as
+    // missing and the test would pass without the skip.
+    const depth = process.cwd().split("/").filter(Boolean).length;
+    const relative = "../".repeat(depth) + trusted.slice(1);
     expect(isAbsolute(relative)).toBe(false);
+    expect(resolvePath(process.cwd(), relative)).toBe(trusted);
+    expect(resolvePath("/", relative)).toBe(trusted);
     expect(await trustedScriptPath(uid, [trusted], settled())).toBe(trusted);
     expect(await trustedScriptPath(uid, [relative], settled())).toBe("");
     expect(await trustedScriptPath(uid, [relative, trusted], settled())).toBe(trusted);
