@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/omercnet/paseo-plugins/compare/top-v1.1.3...top-v2.0.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **top:** top now requires Paseo ^0.13.0; Paseo 0.11 and 0.12 hosts can no longer load it.
+
+### Features
+
+* **top:** import Icon from client/ui and require Paseo 0.13 or later ([#664](https://github.com/omercnet/paseo-plugins/issues/664)) ([6675c56](https://github.com/omercnet/paseo-plugins/commit/6675c5673aab32f04d5ac9071c743b204861e282))
+
 ## [1.1.3](https://github.com/omercnet/paseo-plugins/compare/top-v1.1.2...top-v1.1.3) (2026-11-20)
 
 

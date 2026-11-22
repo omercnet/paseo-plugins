@@ -6,6 +6,22 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.4.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.3.0...pr-radar-v3.4.0) (2026-11-22)
+
+
+### Features
+
+* **pr-radar:** routing script can return extra agent labels ([#662](https://github.com/omercnet/paseo-plugins/issues/662)) ([@djbclark](https://github.com/djbclark)) ([4901d4f](https://github.com/omercnet/paseo-plugins/commit/4901d4fb213e40c46394ba444f3c80102bc883a3))
+
+
+### Bug Fixes
+
+* **pr-radar:** follow-ups from the [#618](https://github.com/omercnet/paseo-plugins/issues/618) review ([#669](https://github.com/omercnet/paseo-plugins/issues/669)) ([@djbclark](https://github.com/djbclark)) ([0f7575d](https://github.com/omercnet/paseo-plugins/commit/0f7575d62bef538c4e226582ada8ac3e68b39e96))
+* **pr-radar:** follow-ups from the [#669](https://github.com/omercnet/paseo-plugins/issues/669) and [#670](https://github.com/omercnet/paseo-plugins/issues/670) reviews ([#675](https://github.com/omercnet/paseo-plugins/issues/675)) ([@djbclark](https://github.com/djbclark)) ([b54e2a8](https://github.com/omercnet/paseo-plugins/commit/b54e2a89552364be61c5d9d2fc6e0276d3995466))
+* **pr-radar:** harden the routing-script runner (process group, symlink hops, queue, fixed PATH) ([#672](https://github.com/omercnet/paseo-plugins/issues/672)) ([@djbclark](https://github.com/djbclark)) ([712bce0](https://github.com/omercnet/paseo-plugins/commit/712bce08f39368326e576ccc6c7b246ab213dbdb))
+* **pr-radar:** keep cached issues when an issue search fails ([#670](https://github.com/omercnet/paseo-plugins/issues/670)) ([@djbclark](https://github.com/djbclark)) ([23adcf5](https://github.com/omercnet/paseo-plugins/commit/23adcf56be73fd06736d248eefef5f4690cb3114))
+* **pr-radar:** refuse an empty trusted PATH and tighten the routing script tests ([#677](https://github.com/omercnet/paseo-plugins/issues/677)) ([@djbclark](https://github.com/djbclark)) ([be9ced6](https://github.com/omercnet/paseo-plugins/commit/be9ced6caca9381bdc5ebd98c2efe40fd5db8743))
+
 ## [3.3.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.2.3...pr-radar-v3.3.0) (2026-11-20)
 
 

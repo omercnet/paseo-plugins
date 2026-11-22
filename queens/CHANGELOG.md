@@ -1,5 +1,16 @@
 # Changelog
 
+## [5.0.0](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.5...queens-v5.0.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **queens:** queens now requires Paseo ^0.13.0; Paseo 0.11 and 0.12 hosts can no longer load it.
+
+### Features
+
+* **queens:** import useToast from client/ui and require Paseo 0.13 or later ([#665](https://github.com/omercnet/paseo-plugins/issues/665)) ([fff9a07](https://github.com/omercnet/paseo-plugins/commit/fff9a0799b75799d72bcdb0adb8558214db79286))
+
 ## [4.1.5](https://github.com/omercnet/paseo-plugins/compare/queens-v4.1.4...queens-v4.1.5) (2026-11-20)
 
 
