@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 const port = Number(process.env.PORT ?? "8080");
 const model = "deterministic";
 let lastPayload: Record<string, unknown> | null = null;
+const CANARY_MCP_TOOL = "mcpx__canary_echo_marker";
 
 function stream(frames: readonly object[]): Response {
   const body = `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`;
@@ -109,12 +110,27 @@ async function chatResponse(payload: Record<string, unknown>): Promise<Response>
     model,
   };
 
-  if (!hasToolResult && hasTool(tools, "write") && prompt.includes("CANARY_MCP")) {
-    return toolCallResponse(base, "call_canary_mcp", "write", {
-      i: "Calling canary MCP echo",
-      path: "xd://mcpx__canary_echo_marker",
-      content: JSON.stringify({ value: "CANARY_MCP_OK" }),
-    });
+  if (!hasToolResult && prompt.includes("CANARY_MCP")) {
+    const mcpArgs = { value: "CANARY_MCP_OK" };
+    if (hasTool(tools, CANARY_MCP_TOOL)) {
+      return toolCallResponse(base, "call_canary_mcp", CANARY_MCP_TOOL, mcpArgs);
+    }
+    // OMP before 19.1.0 routes discoverable host tools through `xd://` devices, which its
+    // system prompt documents; 19.1.0 removed every `xd://` reference.
+    if (hasTool(tools, "write") && JSON.stringify(messages).includes("xd://")) {
+      return toolCallResponse(base, "call_canary_mcp", "write", {
+        i: "Calling canary MCP echo",
+        path: `xd://${CANARY_MCP_TOOL}`,
+        content: JSON.stringify(mcpArgs),
+      });
+    }
+    // OMP 19.1.0+ mounts discoverable host tools as commands of the bash tool.
+    if (hasTool(tools, "bash")) {
+      return toolCallResponse(base, "call_canary_mcp", "bash", {
+        i: "Calling canary MCP echo",
+        command: `${CANARY_MCP_TOOL} --json '${JSON.stringify(mcpArgs)}'`,
+      });
+    }
   }
 
   if (!hasToolResult && prompt.includes("CANARY_HUB_START")) {

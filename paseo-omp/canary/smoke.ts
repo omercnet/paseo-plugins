@@ -301,14 +301,23 @@ try {
     projection: "projected",
   });
   assert(
-    mcpTimeline.entries.some(
-      (entry) =>
-        entry.item.type === "tool_call" &&
-        entry.item.name === "Canary: Echo marker" &&
-        entry.item.detail.type === "unknown" &&
-        entry.item.status === "completed" &&
-        JSON.stringify(entry.item).includes("xd://mcpx__canary_echo_marker"),
-    ),
+    mcpTimeline.entries.some(({ item }) => {
+      if (item.type !== "tool_call" || item.status !== "completed") return false;
+      // OMP before 19.1.0 calls the host tool through an `xd://` device write.
+      if (
+        item.name === "Canary: Echo marker" &&
+        item.detail.type === "unknown" &&
+        JSON.stringify(item).includes("xd://mcpx__canary_echo_marker")
+      ) {
+        return true;
+      }
+      // OMP 19.1.0+ runs it as a command of the bash tool.
+      return (
+        item.detail.type === "shell" &&
+        item.detail.command.startsWith("mcpx__canary_echo_marker ") &&
+        (item.detail.output ?? "").includes("CANARY_MCP_OK")
+      );
+    }),
     `Configured MCP tool did not complete; observed tool calls: ${JSON.stringify(
       mcpTimeline.entries.flatMap(({ item }) =>
         item.type === "tool_call"
