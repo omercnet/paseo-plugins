@@ -243,9 +243,11 @@ function ReadyPrRadarSettings({
   }
 
   function handlePrefixReapply() {
-    const currentServer = latestSettingsRef.current.values.routingLabelPrefixes;
+    // Compare against the server value shown in the conflict notice, not latestSettingsRef, so an
+    // unseen third-client edit arriving before the press still conflicts instead of being overwritten.
+    const shownServer = prefixFieldRef.current.server;
     const draft = prefixFieldRef.current.draft;
-    void savePrefixValue(draft, currentServer);
+    void savePrefixValue(draft, shownServer);
   }
 
   async function handleAddRule() {
