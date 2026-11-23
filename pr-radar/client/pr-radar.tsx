@@ -1,3 +1,4 @@
+import { settingsRpc } from "@getpaseo/plugin";
 import {
   openExternalUrl,
   type PluginSurfaceProps,
@@ -23,7 +24,12 @@ import {
   runRoutingScript,
 } from "../shared/viewer-scope";
 import { HighlightedText } from "./highlighted-text";
-import { applyAutoRouting, defaultLaunchOverrides, launchNewAgent } from "./launch";
+import {
+  applyAutoRouting,
+  defaultLaunchOverrides,
+  launchNewAgent,
+  readCurrentLabelPolicy,
+} from "./launch";
 import {
   type AgentLaunchOverrides,
   agentActionFor,
@@ -57,6 +63,7 @@ import { useRadar } from "./use-radar";
 import { revealFocusedChip } from "./web";
 
 const CLOCK_TICK_MS = 30_000;
+const readPrRadarSettingsRpc = settingsRpc(prRadarSettings.id).read;
 
 type SavedView = "security" | "updated" | "stale" | "automation";
 
@@ -102,6 +109,7 @@ export function PrRadar({
   const acknowledgeUpdates = useRpc(acknowledgeViewerScope);
   const prepareCwd = useRpc(prepareWorkspaceCwd);
   const invokeRouter = useRpc(runRoutingScript);
+  const readSettings = useRpc(readPrRadarSettingsRpc);
   const settingsState = useSettings(prRadarSettings);
   const settings =
     settingsState.status === "ready" ? settingsState.values : DEFAULT_PR_RADAR_SETTINGS;
@@ -241,7 +249,15 @@ export function PrRadar({
 
   const startNewAgentMutation = useMutation({
     mutationFn: async (request: StartAgentLaunchRequest) => {
-      const launched = await launchNewAgent({ paseo, prepareCwd, policy: settings }, request);
+      const launched = await launchNewAgent(
+        {
+          paseo,
+          prepareCwd,
+          readPolicy: () => readCurrentLabelPolicy(readSettings),
+          now: Date.now,
+        },
+        request,
+      );
       if (navigation) {
         navigation.openAgent({ agentId: launched.agentId, serverId: host.id });
       }
@@ -329,7 +345,7 @@ export function PrRadar({
             const profiles = routed.profile
               ? ((await paseo.config.get()).config.agentProfiles ?? [])
               : [];
-            const applied = applyAutoRouting({ settings, routed, profiles });
+            const applied = applyAutoRouting({ settings, routed, profiles, row, now: Date.now() });
             if (applied.status === "blocked") {
               setActionNotice(applied.message);
               return;

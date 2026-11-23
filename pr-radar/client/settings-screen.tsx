@@ -14,13 +14,19 @@ import {
   useToast,
 } from "@getpaseo/plugin/client/ui";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
-import { labelPrefixesProblem } from "../shared/routed-labels";
+import {
+  describeFallbackStatus,
+  labelPrefixesProblem,
+  parseFallbackRuleInput,
+  watchFallbackBoundary,
+} from "../shared/routed-labels";
 import {
   type AutoLaunchMode,
   type CwdMode,
   DEFAULT_PR_RADAR_SETTINGS,
+  type PrRadarSettings,
   PrRadarSettingsSchema,
   prRadarSettings,
 } from "../shared/settings";
@@ -32,6 +38,19 @@ import {
   EFFORT_OPTIONS,
   useAgentLaunchOptions,
 } from "./agent-launch-options";
+import {
+  createSettingsSaveQueue,
+  editFieldDraft,
+  fallbackRuleAdder,
+  finishFieldSave,
+  initFieldState,
+  removeFallbackRule,
+  resyncFieldToServer,
+  type SettingsPatch,
+  type SettingsSaveOptions,
+  syncFieldFromServer,
+  type UncontrolledFieldState,
+} from "./settings-save";
 
 type ReadySettings = Extract<SettingsState<typeof prRadarSettings.schema>, { status: "ready" }>;
 
@@ -68,8 +87,42 @@ function ReadyPrRadarSettings({
   const toast = useToast();
   const [dirQueryText, setDirQueryText] = useState(settings.values.sourceCodeDir);
   const [error, setError] = useState<string | null>(null);
-  // Remounts the prefix input after a reset: it only reads its initial value once.
-  const [prefixInputKey, setPrefixInputKey] = useState(0);
+  // Tracks the uncontrolled prefix input's mounted/synced base value, local draft and conflict
+  // state. Kept in a ref alongside React state so rapid keystrokes always read the latest base.
+  const [prefixField, setPrefixField] = useState<UncontrolledFieldState>(() =>
+    initFieldState(settings.values.routingLabelPrefixes),
+  );
+  const prefixFieldRef = useRef(prefixField);
+  const prefixInFlightRef = useRef(0);
+  const updatePrefixField = (
+    updater: (state: UncontrolledFieldState) => UncontrolledFieldState,
+  ) => {
+    const next = updater(prefixFieldRef.current);
+    prefixFieldRef.current = next;
+    setPrefixField(next);
+  };
+  useEffect(() => {
+    updatePrefixField((state) =>
+      syncFieldFromServer(
+        state,
+        settings.values.routingLabelPrefixes,
+        prefixInFlightRef.current > 0,
+      ),
+    );
+  }, [settings.values.routingLabelPrefixes]);
+  const [ruleText, setRuleText] = useState("");
+  const [ruleError, setRuleError] = useState<string | null>(null);
+  const [ruleInputKey, setRuleInputKey] = useState(0);
+  // The status line of each rule reads this clock, so a rule that ends (or comes within the seven
+  // day cap) while the screen is open changes its text without a reload.
+  const [ruleClock, setRuleClock] = useState(() => Date.now());
+  useEffect(
+    () =>
+      watchFallbackBoundary(settings.values.routingLabelFallbacks, ruleClock, () =>
+        setRuleClock(Date.now()),
+      ),
+    [settings.values.routingLabelFallbacks, ruleClock],
+  );
 
   const { profileOptions, providerOptions, modelOptions, modeOptions, contextModeOptions } =
     useAgentLaunchOptions();
@@ -111,49 +164,126 @@ function ReadyPrRadarSettings({
     values: settings.values,
     revision: settings.revision,
   };
-  const queuedPatchRef = useRef<Partial<typeof settings.values> | null>(null);
-  const saveChainRef = useRef<Promise<boolean>>(Promise.resolve(true));
-
-  async function savePatch(patch: Partial<typeof settings.values>): Promise<boolean> {
-    queuedPatchRef.current = { ...(queuedPatchRef.current ?? {}), ...patch };
-    const run = saveChainRef.current.then(async () => {
-      const nextPatch = queuedPatchRef.current;
-      if (!nextPatch) return true;
-      queuedPatchRef.current = null;
-      setError(null);
-      const parsed = PrRadarSettingsSchema.safeParse({
-        ...latestSettingsRef.current.values,
-        ...nextPatch,
-      });
-      if (!parsed.success) {
-        setError(parsed.error.issues[0]?.message ?? "Invalid setting value.");
-        return false;
-      }
-      try {
-        const saved = await settings.save(parsed.data, latestSettingsRef.current.revision);
-        if (saved === false) {
-          setError("Settings changed concurrently; please retry.");
-          return false;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [saveQueue] = useState(() =>
+    createSettingsSaveQueue<PrRadarSettings>({
+      latest: () => latestSettingsRef.current,
+      remember: (values) => {
+        latestSettingsRef.current = { values, revision: latestSettingsRef.current.revision };
+      },
+      parse: (values) => {
+        const parsed = PrRadarSettingsSchema.safeParse(values);
+        return parsed.success
+          ? { success: true, data: parsed.data }
+          : {
+              success: false,
+              message: parsed.error.issues[0]?.message ?? "Invalid setting value.",
+            };
+      },
+      write: (values, revision) => settingsRef.current.save(values, revision),
+      report: (message) => {
+        if (message !== null || !prefixFieldRef.current.conflicted) {
+          setError(message);
         }
-        latestSettingsRef.current = {
-          values: parsed.data,
-          revision: latestSettingsRef.current.revision,
-        };
-        return true;
-      } catch (updateError) {
-        setError(updateError instanceof Error ? updateError.message : "Could not save settings.");
-        return false;
-      }
-    });
-    saveChainRef.current = run.catch(() => false);
-    return run;
+      },
+      onConflict: (keys) => {
+        if (keys.includes("routingLabelPrefixes")) {
+          updatePrefixField((state) => ({
+            ...state,
+            server: latestSettingsRef.current.values.routingLabelPrefixes,
+            conflicted: true,
+          }));
+        }
+      },
+    }),
+  );
+
+  // A plain patch replaces fields; a function patch is applied to the newest saved document, so
+  // list edits (fallback rules) never build on a list that an in-flight save already changed.
+  function savePatch(
+    patch: SettingsPatch<PrRadarSettings>,
+    options?: SettingsSaveOptions<PrRadarSettings>,
+  ): Promise<boolean> {
+    return saveQueue(patch, options);
+  }
+
+  async function savePrefixValue(next: string, base: string) {
+    prefixInFlightRef.current += 1;
+    try {
+      const saved = await savePatch(
+        { routingLabelPrefixes: next },
+        { base: { routingLabelPrefixes: base } },
+      );
+      const serverNow = latestSettingsRef.current.values.routingLabelPrefixes;
+      const conflicted = !saved && serverNow !== base;
+      updatePrefixField((state) =>
+        finishFieldSave({ ...state, server: serverNow }, next, saved, conflicted),
+      );
+      if (saved) setError(null);
+    } finally {
+      prefixInFlightRef.current -= 1;
+    }
+  }
+
+  function handlePrefixChange(next: string) {
+    const base = prefixFieldRef.current.base;
+    updatePrefixField((state) => editFieldDraft(state, next));
+    void savePrefixValue(next, base);
+  }
+
+  function handlePrefixResync() {
+    updatePrefixField((state) =>
+      resyncFieldToServer({
+        ...state,
+        server: latestSettingsRef.current.values.routingLabelPrefixes,
+      }),
+    );
+    setError(null);
+  }
+
+  function handlePrefixReapply() {
+    // Compare against the server value shown in the conflict notice, not latestSettingsRef, so an
+    // unseen third-client edit arriving before the press still conflicts instead of being overwritten.
+    const shownServer = prefixFieldRef.current.server;
+    const draft = prefixFieldRef.current.draft;
+    void savePrefixValue(draft, shownServer);
+  }
+
+  async function handleAddRule() {
+    const parsedRule = parseFallbackRuleInput(ruleText, Date.now());
+    if ("error" in parsedRule) {
+      setRuleError(parsedRule.error);
+      return;
+    }
+    setRuleError(null);
+    // Whether the rule is already listed is decided inside the save queue, on the list that holds
+    // every edit queued before this one, not on the rendered settings (which lag a pending save).
+    const adder = fallbackRuleAdder(parsedRule.rule);
+    const saved = await savePatch(adder.patch);
+    if (!saved) return;
+    if (adder.wasDuplicate()) {
+      setRuleError(
+        "A rule for this repository and end time already exists. Remove it first to change its note.",
+      );
+      return;
+    }
+    setRuleText("");
+    setRuleInputKey((key) => key + 1);
   }
 
   async function handleReset() {
     setDirQueryText(DEFAULT_PR_RADAR_SETTINGS.sourceCodeDir);
-    const saved = await savePatch({ ...DEFAULT_PR_RADAR_SETTINGS });
+    const saved = await savePatch(
+      { ...DEFAULT_PR_RADAR_SETTINGS },
+      { base: { routingLabelPrefixes: prefixFieldRef.current.base } },
+    );
     if (saved) {
-      setPrefixInputKey((key) => key + 1);
+      updatePrefixField((state) => ({
+        ...initFieldState(DEFAULT_PR_RADAR_SETTINGS.routingLabelPrefixes),
+        mountKey: state.mountKey + 1,
+      }));
+      setError(null);
       toast.show("PR Radar settings reset to defaults.", { variant: "success" });
     }
   }
@@ -276,11 +406,62 @@ function ReadyPrRadarSettings({
           <SettingsInput
             label="Allowed label prefixes"
             hint="Routing script labels that one of these (comma or space separated) admits keep their name. A prefix admits itself, keys that continue it with . or / (ade.kind admits ade.kind.x, not ade.kinder), and every key under a prefix that ends in . or / (ade. admits ade.anything). Prefer the narrowest prefix, such as ade.kind. Every other script label is stored as pr-radar.route.<key>. pr-radar, pr-radar.*, paseo and paseo.* are always reserved."
-            key={prefixInputKey}
-            error={labelPrefixesProblem(settings.values.routingLabelPrefixes)}
-            initialValue={settings.values.routingLabelPrefixes}
+            key={prefixField.mountKey}
+            error={
+              prefixField.conflicted
+                ? `Another client updated Allowed label prefixes to ${prefixField.server ? `"${prefixField.server}"` : "(empty)"}. Your edit above was not saved.`
+                : labelPrefixesProblem(settings.values.routingLabelPrefixes)
+            }
+            initialValue={prefixField.base}
             placeholder="None: all script labels go under pr-radar.route."
-            onChangeText={(next) => void savePatch({ routingLabelPrefixes: next })}
+            onChangeText={handlePrefixChange}
+          />
+          {prefixField.conflicted ? (
+            <>
+              <SettingsAction
+                label="Load updated label prefixes"
+                hint={
+                  prefixField.server
+                    ? `Replace your unsaved edit with "${prefixField.server}"`
+                    : "Replace your unsaved edit with the empty server value"
+                }
+                actionLabel="Use latest"
+                onPress={handlePrefixResync}
+              />
+              <SettingsAction
+                label="Apply your label prefixes"
+                hint="Save the text above over the updated server value"
+                actionLabel="Re-apply edit"
+                onPress={handlePrefixReapply}
+              />
+            </>
+          ) : null}
+          {settings.values.routingLabelFallbacks.map((rule) => (
+            <SettingsAction
+              key={`${rule.repository}-${rule.until}-${rule.note ?? ""}`}
+              label={`Label fallback: ${rule.repository}`}
+              hint={`${describeFallbackStatus(rule, ruleClock)}${rule.note ? ` - ${rule.note}` : ""}`}
+              actionLabel="Remove"
+              onPress={() =>
+                void savePatch((latest) => ({
+                  routingLabelFallbacks: removeFallbackRule(latest.routingLabelFallbacks, rule),
+                }))
+              }
+            />
+          ))}
+          <SettingsInput
+            key={ruleInputKey}
+            label="Add temporary label fallback"
+            hint="owner/name (or *), an ISO-8601 end time within 7 days, then an optional note, e.g. acme/api 2026-11-25T18:00Z fixing the script. While a rule is active, invalid routing script labels are skipped with a warning instead of blocking the launch."
+            error={ruleError}
+            initialValue=""
+            placeholder="owner/name 2026-11-25T18:00Z note"
+            onChangeText={setRuleText}
+          />
+          <SettingsAction
+            label="Add fallback rule"
+            actionLabel="Add rule"
+            onPress={() => void handleAddRule()}
           />
           <SettingsAction
             label="Reset settings"

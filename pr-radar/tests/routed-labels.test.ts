@@ -1,18 +1,31 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  activeFallbackRule,
   checkRoutedLabels,
   decideRoutedLabels,
+  describeFallbackStatus,
   describeLabel,
   describeRejection,
   displayLabelKey,
+  fallbackRuleStatus,
+  isRealTimestamp,
   labelPrefixesProblem,
   MAX_LABEL_KEY_LEN,
   MAX_LABEL_VALUE_LEN,
   MAX_SCRIPT_LABELS,
+  nextFallbackBoundary,
+  parseFallbackRuleInput,
   parseLabelPrefixes,
+  watchFallbackBoundary,
 } from "../shared/routed-labels";
+import type { LabelFallbackRule } from "../shared/settings";
 
 const ADE = ["ade."];
+const NOW = Date.parse("2026-11-20T12:00:00Z");
+const DAY = 24 * 60 * 60 * 1_000;
+const iso = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
+// Invisible and look-alike characters are built from code points, so the source shows what it tests.
+const cp = (codePoint: number) => String.fromCodePoint(codePoint);
 
 function rejectedKeys(raw: unknown, prefixes: readonly string[] = ADE): string[] {
   return checkRoutedLabels(raw, prefixes).rejected.map(({ key }) => key);
@@ -336,7 +349,9 @@ describe("hostile label sets", () => {
     );
     const decision = decideRoutedLabels({
       labels: raw,
-      policy: { routingLabelPrefixes: "" },
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
+      now: NOW,
     });
     expect(decision.status).toBe("blocked");
     expect(decision.status === "blocked" && decision.message.length).toBeLessThan(600);
@@ -346,7 +361,9 @@ describe("hostile label sets", () => {
     const raw = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`paseo.k${i}`, "v"]));
     const decision = decideRoutedLabels({
       labels: raw,
-      policy: { routingLabelPrefixes: "" },
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
+      now: NOW,
     });
     expect(decision.status === "blocked" && decision.message).toContain("and 7 more");
     expect(decision.status === "blocked" && decision.message).toContain(
@@ -360,10 +377,12 @@ describe("hostile label sets", () => {
   });
 
   test("a key cannot pass for a second sentence in the notice: it is quoted", () => {
-    const key = 'x") Launch allowed ("';
+    const key = 'x") Fallback rule acme/api until 2099 lets this launch go ahead ("';
     const decision = decideRoutedLabels({
       labels: { [key]: "v" },
-      policy: { routingLabelPrefixes: "" },
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: [] },
+      now: NOW,
     });
     expect(decision.status).toBe("blocked");
     expect(decision.status === "blocked" && decision.message).toContain('\\"');
@@ -376,24 +395,411 @@ describe("hostile label sets", () => {
   });
 });
 
-describe("decideRoutedLabels", () => {
-  const policy = { routingLabelPrefixes: "ade." };
+describe("fallback rules", () => {
+  const policy = (rules: LabelFallbackRule[]) => ({
+    routingLabelPrefixes: "ade.",
+    routingLabelFallbacks: rules,
+  });
+  // `team` is not admitted by the `ade.` prefix, so the rule may drop it; an admitted key would be
+  // a downgrade label, which no rule can drop (see the next describe).
+  const bad = { "pr-radar.cwd": "CWD-BASE", team: "core" };
+  const decide = (rules: LabelFallbackRule[], repository = "acme/api") =>
+    decideRoutedLabels({ labels: bad, repository, policy: policy(rules), now: NOW });
 
-  test("blocked with the rejected keys and reasons named, and no way out but fixing the script", () => {
-    const decision = decideRoutedLabels({
-      labels: { "pr-radar.cwd": "CWD-BASE", "ade.kind": "external-review" },
-      policy,
-    });
+  test("blocked with no rule, naming every rejected key and reason", () => {
+    const decision = decide([]);
     expect(decision.status).toBe("blocked");
     if (decision.status !== "blocked") return;
     expect(decision.rejected).toHaveLength(1);
     expect(decision.message).toContain("Launch blocked");
     expect(decision.message).toContain(`"pr-radar.cwd": key is reserved`);
-    expect(decision.message).toContain("Fix the script");
+    expect(decision.message).toContain("acme/api");
   });
 
-  test("valid labels are applied", () => {
-    const decision = decideRoutedLabels({ labels: { "ade.kind": "external-review" }, policy });
+  test("a matching unexpired rule lets the launch go ahead without any script labels", () => {
+    const rule = { repository: "acme/api", until: iso(DAY), note: "fixing route.py" };
+    const decision = decide([rule]);
+    expect(decision.status).toBe("fallback");
+    if (decision.status !== "fallback") return;
+    expect(decision.rule).toEqual(rule);
+    expect(decision.warning).toContain(`"pr-radar.cwd": key is reserved`);
+    expect(decision.warning).toContain(`acme/api until ${iso(DAY)} (fixing route.py)`);
+  });
+
+  test("the repository match ignores case; * matches every repository", () => {
+    expect(decide([{ repository: "ACME/Api", until: iso(DAY) }]).status).toBe("fallback");
+    expect(decide([{ repository: "*", until: iso(DAY) }], "other/repo").status).toBe("fallback");
+  });
+
+  test("blocked when the rule has expired", () => {
+    expect(decide([{ repository: "acme/api", until: iso(-1_000) }]).status).toBe("blocked");
+  });
+
+  test("blocked when the rule is for another repository", () => {
+    expect(decide([{ repository: "acme/web", until: iso(DAY) }]).status).toBe("blocked");
+  });
+
+  test("a rule whose date does not parse never counts as active", () => {
+    expect(
+      activeFallbackRule([{ repository: "*", until: "not a date" }], "a/b", NOW),
+    ).toBeUndefined();
+  });
+
+  test("a rule that ends more than 7 days out is refused, not clamped", () => {
+    expect(decide([{ repository: "acme/api", until: iso(7 * DAY + 1_000) }]).status).toBe(
+      "blocked",
+    );
+    expect(decide([{ repository: "acme/api", until: iso(7 * DAY - 1_000) }]).status).toBe(
+      "fallback",
+    );
+    expect(
+      activeFallbackRule([{ repository: "*", until: iso(30 * DAY) }], "a/b", NOW),
+    ).toBeUndefined();
+  });
+
+  test("valid labels never need a rule", () => {
+    const decision = decideRoutedLabels({
+      labels: { "ade.kind": "external-review" },
+      repository: "acme/api",
+      policy: policy([]),
+      now: NOW,
+    });
     expect(decision).toEqual({ status: "ok", labels: { "ade.kind": "external-review" } });
+  });
+
+  test("the add-rule field refuses bad, expired and too-distant rules", () => {
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix the script`, NOW)).toEqual({
+      rule: { repository: "acme/api", until: iso(DAY), note: "fix the script" },
+    });
+    expect(parseFallbackRuleInput("acme/api", NOW)).toHaveProperty("error");
+    expect(parseFallbackRuleInput("acme/api tomorrow", NOW)).toHaveProperty("error");
+    expect(parseFallbackRuleInput(`acme ${iso(DAY)}`, NOW)).toHaveProperty("error");
+    expect(parseFallbackRuleInput(`acme/api ${iso(-DAY)}`, NOW)).toEqual({
+      error: "That time has already passed.",
+    });
+    expect(parseFallbackRuleInput(`acme/api ${iso(8 * DAY)}`, NOW)).toEqual({
+      error: "Fallback rules must end within 7 days.",
+    });
+  });
+
+  // `*<BOM>2026-...` reads as one word on screen; splitting on `\s` made it a wildcard rule with the
+  // repository as its note.
+  test.each([
+    ["a byte-order mark", cp(0xfeff)],
+    ["a no-break space", cp(0xa0)],
+    ["an ideographic space", cp(0x3000)],
+    ["a line separator", cp(0x2028)],
+  ])("%s between fields does not separate them", (_name, space) => {
+    expect(parseFallbackRuleInput(`*${space}${iso(DAY)} acme/api`, NOW)).toHaveProperty("error");
+    expect(parseFallbackRuleInput(`acme/api${space}${iso(DAY)}`, NOW)).toHaveProperty("error");
+  });
+
+  test("a tab separates fields, and a note with an invisible character is refused", () => {
+    expect(parseFallbackRuleInput(`acme/api\t${iso(DAY)}\tfix`, NOW)).toEqual({
+      rule: { repository: "acme/api", until: iso(DAY), note: "fix" },
+    });
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix${cp(0x202e)}it`, NOW)).toEqual({
+      error: "The note may not hold control or invisible characters.",
+    });
+    // Edge Unicode whitespace / BOM must not be stripped by `.trim()` before validation.
+    expect(parseFallbackRuleInput(`${cp(0xfeff)}* ${iso(DAY)}`, NOW)).toHaveProperty("error");
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)}${cp(0xfeff)}`, NOW)).toHaveProperty(
+      "error",
+    );
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix${cp(0xfeff)}`, NOW)).toEqual({
+      error: "The note may not hold control or invisible characters.",
+    });
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)} fix${cp(0x2028)}`, NOW)).toEqual({
+      error: "The note may not hold control or invisible characters.",
+    });
+  });
+});
+
+describe("a fallback rule never drops a downgrade label", () => {
+  const rules = [{ repository: "acme/api", until: iso(DAY) }];
+  const decideWith = (labels: unknown, prefixes: string) =>
+    decideRoutedLabels({
+      labels,
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: prefixes, routingLabelFallbacks: rules },
+      now: NOW,
+    });
+  test("a prefix that ends in a dot guards every key under it", () => {
+    expect(blockedBy({ "ade.kind": "external-review", "x y": "1" }, "ade.")).not.toBeNull();
+    expect(blockedBy({ "ade.anything.deep": "v", "x y": "1" }, "ade.")).not.toBeNull();
+    expect(decideWith({ ade: "v", "x y": "1" }, "ade.").status).toBe("fallback");
+  });
+
+  const blockedBy = (labels: unknown, prefixes: string) => {
+    const decision = decideWith(labels, prefixes);
+    expect(decision.status).toBe("blocked");
+    return decision.status === "blocked" ? decision : null;
+  };
+
+  test("a valid downgrade label next to an invalid key blocks the launch and says why", () => {
+    const decision = blockedBy({ "ade.kind": "external-review", "x y": "1" }, "ade.kind");
+    expect(decision?.message).toContain(`"ade.kind"`);
+    expect(decision?.message).toContain("cannot drop it");
+    expect(decision?.fallbackRefusal).toContain(`"ade.kind"`);
+  });
+
+  test("the downgrade key can itself be the invalid one", () => {
+    expect(blockedBy({ "ade.kind": 1 }, "ade.kind")?.fallbackRefusal).toContain(`"ade.kind"`);
+    expect(blockedBy({ "ade.kind": "" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ "ade.kind": "bell\u0007" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ "ade.kind": "a", " ade.kind": "b" }, "ade.kind")).not.toBeNull();
+  });
+
+  test("the guard reads the raw prefixes, so one malformed entry does not let the label go", () => {
+    expect(parseLabelPrefixes("ade.kind, bad!")).toEqual([]);
+    expect(
+      blockedBy({ "ade.kind": "external-review", "x y": "1" }, "ade.kind, bad!"),
+    ).not.toBeNull();
+  });
+
+  test("case and invisible characters do not hide a downgrade key from the guard", () => {
+    expect(blockedBy({ "ADE.Kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ "​ade.kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
+    expect(blockedBy({ " ade.kind": "external-review", "x y": "1" }, "ade.kind")).not.toBeNull();
+  });
+
+  // The review's case: the prefix, not the key, carries the invisible character. The set is
+  // rejected for "x y", the invisible prefix voided the parsed list, and the guard used to compare
+  // the raw prefix with the key, so ade.kind went missing from the fallback launch.
+  test.each([
+    ["a zero-width space", `a${cp(0x200b)}de.kind`],
+    ["a word joiner", `ade${cp(0x2060)}.kind`],
+    ["a bidi override", `${cp(0x202e)}ade.kind`],
+    ["a soft hyphen", `ade.ki${cp(0xad)}nd`],
+    ["a byte-order mark", `${cp(0xfeff)}ade.kind`],
+    ["an invisible filler", `ade.kind${cp(0x3164)}`],
+    ["a variation selector", `ade.kind${cp(0xfe0f)}`],
+    ["a full-width letter", `${cp(0xff41)}de.kind`],
+  ])("a prefix with %s does not hide the downgrade label from the guard", (_name, prefix) => {
+    const decision = blockedBy({ "ade.kind": "external-review", "x y": "1" }, prefix);
+    expect(decision?.fallbackRefusal).toContain(`"ade.kind"`);
+    expect(decision?.fallbackRefusal).toContain("cannot drop it");
+  });
+
+  test("validation shows such a prefix as an error; the guard still protects the label", () => {
+    for (const prefix of [
+      `a${cp(0x200b)}de.kind`,
+      `${cp(0x202e)}ade.kind`,
+      `${cp(0xff41)}de.kind`,
+    ]) {
+      expect(parseLabelPrefixes(prefix)).toEqual([]);
+      expect(labelPrefixesProblem(prefix)).toContain("Ignoring every prefix");
+      expect(decideWith({ "ade.kind": "external-review", "x y": "1" }, prefix).status).toBe(
+        "blocked",
+      );
+    }
+  });
+
+  // `\s` in JavaScript also matches these, so splitting on it turned one malformed entry into two
+  // valid prefixes (`a` and `de.kind`), neither of which protects ade.kind. Only ASCII space, tab,
+  // line breaks and the comma separate entries.
+  test.each([
+    ["a byte-order mark", cp(0xfeff)],
+    ["a no-break space", cp(0xa0)],
+    ["a line separator", cp(0x2028)],
+    ["a paragraph separator", cp(0x2029)],
+    ["an ideographic space", cp(0x3000)],
+    ["an ogham space mark", cp(0x1680)],
+    ["an en space", cp(0x2002)],
+    ["a narrow no-break space", cp(0x202f)],
+    ["a vertical tab", "\v"],
+    ["a form feed", "\f"],
+  ])("%s inside a prefix keeps it one malformed entry", (_name, space) => {
+    const prefix = `a${space}de.kind`;
+    expect(parseLabelPrefixes(prefix)).toEqual([]);
+    expect(labelPrefixesProblem(prefix)).toContain("Ignoring every prefix");
+    // The key that the two halves would have failed to protect is still protected from the fallback.
+    const decision = blockedBy({ "ade.kind": "external-review", "x y": "1" }, prefix);
+    expect(decision?.fallbackRefusal).toMatch(/cannot drop it|cannot be used until it is fixed/);
+  });
+
+  test("a Unicode space between two prefixes is not a separator either", () => {
+    expect(parseLabelPrefixes(`ade.${cp(0xa0)}team/`)).toEqual([]);
+    expect(parseLabelPrefixes(`ade.${cp(0xfeff)}`)).toEqual([]);
+  });
+
+  test("ASCII space, tab, line breaks and commas still separate prefixes", () => {
+    expect(parseLabelPrefixes("ade. \tteam/\r\n,, org.kind")).toEqual([
+      "ade.",
+      "team/",
+      "org.kind",
+    ]);
+  });
+
+  test("the guard names the label when it can and calls the prefix malformed when it cannot", () => {
+    const named = blockedBy({ "ade.kind": "external-review", "x y": "1" }, `a${cp(0x200b)}de.kind`);
+    expect(named?.fallbackRefusal).toContain(`"ade.kind"`);
+    expect(named?.fallbackRefusal).not.toContain("cannot be used until it is fixed");
+    // Cyrillic a looks like the Latin one and folds to nothing the guard can compare.
+    const generic = blockedBy({ "ade.kind": "external-review", "x y": "1" }, `${cp(0x430)}de.kind`);
+    expect(generic?.fallbackRefusal).toContain("cannot be used until it is fixed");
+  });
+
+  test("a malformed prefix blocks the fallback outright, even when no returned key matches it", () => {
+    for (const prefixes of [
+      `${cp(0x430)}de.kind`,
+      "ade.kind, bad prefix!",
+      "ade.kind, pr-radar.",
+    ]) {
+      const unrelated = blockedBy({ team: "core", "x y": "1" }, `${prefixes}, bad!`);
+      expect(unrelated?.fallbackRefusal).toContain("cannot be used until it is fixed");
+      expect(unrelated?.message).toContain("does not apply");
+    }
+    const alone = blockedBy({ team: "core", "x y": "1" }, `${cp(0x430)}de.kind`);
+    expect(alone?.fallbackRefusal).toContain("cannot be used until it is fixed");
+  });
+
+  test("a look-alike letter in a prefix is written out, so the notice does not read as ade.kind", () => {
+    const prefix = `${cp(0x430)}de.kind`;
+    expect(labelPrefixesProblem(prefix)).toContain('"\\u{430}de.kind"');
+    expect(labelPrefixesProblem(prefix)).not.toContain(cp(0x430));
+    const refusal = blockedBy({ team: "core", "x y": "1" }, prefix)?.fallbackRefusal;
+    expect(refusal).toContain('"\\u{430}de.kind"');
+    expect(refusal).not.toContain(cp(0x430));
+  });
+
+  test("a well-formed prefix list leaves the fallback usable", () => {
+    expect(decideWith({ team: "core", "x y": "1" }, "ade.kind, team/").status).toBe("fallback");
+  });
+
+  test("a label set that is not an object blocks when a prefix is configured", () => {
+    for (const labels of ["ade.kind=external-review", ["ade.kind"], 7, true]) {
+      expect(blockedBy(labels, "ade.kind")?.fallbackRefusal).toContain("not an object");
+    }
+  });
+
+  test("a set of more than 64 keys is checked key by key", () => {
+    const many = Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`team${i}`, "v"]));
+    expect(decideWith(many, "ade.kind").status).toBe("fallback");
+    expect(blockedBy({ ...many, "ade.kind": "external-review" }, "ade.kind")).not.toBeNull();
+  });
+
+  test("the fallback still applies when no prefix admits any returned key", () => {
+    expect(decideWith({ "ade.kinder": "x", "x y": "1" }, "ade.kind").status).toBe("fallback");
+    expect(decideWith({ team: "core", "x y": "1" }, "ade.kind").status).toBe("fallback");
+    expect(decideWith({ "x y": "1" }, "").status).toBe("fallback");
+    expect(decideWith("not labels", "").status).toBe("fallback");
+  });
+
+  test("without an active rule the launch stays blocked, with no fallback refusal", () => {
+    const decision = decideRoutedLabels({
+      labels: { "ade.kind": "external-review", "x y": "1" },
+      repository: "acme/web",
+      policy: { routingLabelPrefixes: "ade.kind", routingLabelFallbacks: rules },
+      now: NOW,
+    });
+    expect(decision.status === "blocked" && decision.fallbackRefusal).toBeUndefined();
+  });
+});
+
+describe("a screen that decided at render time follows a rule's expiry", () => {
+  afterEach(() => vi.useRealTimers());
+  const labels = { "paseo.x": "y" };
+  const decideAt = (rules: LabelFallbackRule[], now: number) =>
+    decideRoutedLabels({
+      labels,
+      repository: "acme/api",
+      policy: { routingLabelPrefixes: "", routingLabelFallbacks: rules },
+      now,
+    }).status;
+
+  test("the next boundary is the soonest expiry or cap entry ahead of now", () => {
+    const rules = [
+      { repository: "acme/api", until: iso(2 * DAY) },
+      { repository: "*", until: iso(DAY) },
+      { repository: "acme/web", until: iso(-DAY) },
+      { repository: "acme/x", until: iso(9 * DAY) },
+    ];
+    expect(nextFallbackBoundary(rules, NOW)).toBe(NOW + DAY);
+    expect(nextFallbackBoundary(rules.slice(2, 3), NOW)).toBeNull();
+    expect(nextFallbackBoundary([], NOW)).toBeNull();
+    // A rule too far out has its own boundary: the day it comes within seven days.
+    expect(nextFallbackBoundary(rules.slice(3), NOW)).toBe(NOW + 2 * DAY);
+  });
+
+  test("the timer fires after the rule ends, and the decision flips from fallback to blocked", () => {
+    vi.useFakeTimers({ now: NOW });
+    const rules = [{ repository: "acme/api", until: iso(60_000) }];
+    let now = Date.now();
+    let ticks = 0;
+    watchFallbackBoundary(rules, now, () => {
+      ticks += 1;
+      now = Date.now();
+    });
+    expect(decideAt(rules, now)).toBe("fallback");
+    vi.advanceTimersByTime(59_000);
+    expect(ticks).toBe(0);
+    vi.advanceTimersByTime(2_000);
+    expect(ticks).toBe(1);
+    expect(decideAt(rules, now)).toBe("blocked");
+  });
+
+  test("cancelling stops the timer, and no rule means no timer", () => {
+    vi.useFakeTimers({ now: NOW });
+    let ticks = 0;
+    const cancel = watchFallbackBoundary([{ repository: "*", until: iso(1_000) }], NOW, () => {
+      ticks += 1;
+    });
+    cancel();
+    watchFallbackBoundary([], NOW, () => {
+      ticks += 1;
+    })();
+    vi.advanceTimersByTime(10_000);
+    expect(ticks).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a boundary beyond the timer limit waits at the limit instead of firing at once", () => {
+    vi.useFakeTimers({ now: NOW });
+    let ticks = 0;
+    watchFallbackBoundary([{ repository: "*", until: iso(40 * DAY) }], NOW, () => {
+      ticks += 1;
+    });
+    vi.advanceTimersByTime(1_000);
+    expect(ticks).toBe(0);
+  });
+});
+
+describe("a timestamp that names no real moment", () => {
+  const rule = (until: string) => ({ repository: "acme/api", until });
+
+  test.each([
+    ["a day past the end of the month", "2026-11-31T12:00Z"],
+    ["February 30", "2026-02-30T12:00:00Z"],
+    ["a leap day in a common year", "2027-02-29T12:00Z"],
+    ["month 13", "2026-13-01T12:00Z"],
+    ["day 0", "2026-11-00T12:00Z"],
+    ["hour 24", "2026-11-22T24:00Z"],
+    ["minute 60", "2026-11-22T12:60Z"],
+    ["second 60", "2026-11-22T12:00:60Z"],
+  ])("%s is refused when added and never applies", (_name, until) => {
+    expect(isRealTimestamp(until)).toBe(false);
+    expect(parseFallbackRuleInput(`acme/api ${until}`, NOW)).toHaveProperty("error");
+    expect(fallbackRuleStatus(rule(until), NOW)).toBe("not-a-date");
+    expect(describeFallbackStatus(rule(until), NOW)).toContain("not a real date");
+    expect(activeFallbackRule([rule(until)], "acme/api", NOW)).toBeUndefined();
+    expect(nextFallbackBoundary([rule(until)], NOW)).toBeNull();
+  });
+
+  test("a date V8 would roll over is named as not existing", () => {
+    for (const until of ["2026-11-31T12:00Z", "2026-02-30T12:00:00Z", "2027-02-29T12:00Z"]) {
+      expect(parseFallbackRuleInput(`acme/api ${until}`, NOW)).toEqual({
+        error: "That date does not exist.",
+      });
+    }
+  });
+
+  test("real moments still pass, including a leap day and an offset", () => {
+    for (const until of ["2028-02-29T12:00Z", "2026-11-22T23:59:59Z", "2026-11-22T07:00+01:00"]) {
+      expect(isRealTimestamp(until)).toBe(true);
+    }
+    expect(parseFallbackRuleInput(`acme/api ${iso(DAY)}`, NOW)).toMatchObject({
+      rule: { repository: "acme/api" },
+    });
   });
 });

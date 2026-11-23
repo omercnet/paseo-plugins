@@ -23,6 +23,8 @@ import {
 import { labelPrefixesProblem } from "../shared/routed-labels";
 import {
   DEFAULT_PR_RADAR_SETTINGS,
+  FALLBACK_NOTE_UNSAFE_ERROR,
+  LabelFallbackRuleSchema,
   migratePrRadarSettings,
   PrRadarSettingsSchema,
   prRadarSettings,
@@ -30,20 +32,100 @@ import {
 import { RoutingScriptResultSchema } from "../shared/viewer-scope";
 
 describe("settings schema", () => {
-  test("migration drops retired keys and keeps every other value", () => {
-    const migrated = migratePrRadarSettings({
-      sourceCodeDir: "~/code",
-      routingLabelPrefixes: "ade.kind",
-      routingLabelFallbacks: [{ repository: "*", until: "2099-01-01T00:00Z" }],
-    });
-    expect(migrated).toEqual({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" });
-    expect(PrRadarSettingsSchema.parse(migrated).routingLabelPrefixes).toBe("ade.kind");
-    expect(migratePrRadarSettings("not an object")).toBe("not an object");
-    expect(migratePrRadarSettings(null)).toBeNull();
+  test("a document saved by the label-only version loads with no fallback rule", () => {
+    const parsed = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ sourceCodeDir: "~/code", routingLabelPrefixes: "ade.kind" }, 2),
+    );
+    expect(parsed.routingLabelFallbacks).toEqual([]);
+    expect(parsed.routingLabelPrefixes).toBe("ade.kind");
+    expect(parsed.sourceCodeDir).toBe("~/code");
   });
 
-  test("the saved settings document is version 2 and migrates older ones", () => {
-    expect(prRadarSettings.version).toBe(2);
+  // Version 2 retired the rules and deleted them from older documents. A document that skipped it
+  // (version 1) still holds them, and reading it as version 3 must not bring them back.
+  test.each([1, 2])("rules in a version %i document are stripped, not revived", (version) => {
+    const rule = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
+    const migrated = migratePrRadarSettings(
+      { routingLabelPrefixes: "ade.kind", routingLabelFallbacks: [rule] },
+      version,
+    );
+    expect(migrated).toEqual({ routingLabelPrefixes: "ade.kind" });
+    const parsed = PrRadarSettingsSchema.parse(migrated);
+    expect(parsed.routingLabelFallbacks).toEqual([]);
+    expect(parsed.routingLabelPrefixes).toBe("ade.kind");
+  });
+
+  test("a version 3 document keeps its rules", () => {
+    const rule = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
+    const parsed = PrRadarSettingsSchema.parse(
+      migratePrRadarSettings({ routingLabelFallbacks: [rule] }, 3),
+    );
+    expect(parsed.routingLabelFallbacks).toEqual([rule]);
+  });
+
+  test("LabelFallbackRuleSchema rejects notes with control or invisible characters before trimming", () => {
+    const base = { repository: "acme/api", until: "2099-01-01T00:00:00.000Z" };
+    for (const note of [
+      "fix\u202Eit",
+      "fix\u0007",
+      "fix\uFEFF",
+      "\uFEFFfix",
+      "fix\u2028",
+      "fix\nit",
+    ]) {
+      const parsed = LabelFallbackRuleSchema.safeParse({ ...base, note });
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues[0]?.message).toBe(FALLBACK_NOTE_UNSAFE_ERROR);
+      }
+    }
+    const clean = LabelFallbackRuleSchema.safeParse({ ...base, note: "  fixing route.py  " });
+    expect(clean).toEqual({
+      success: true,
+      data: { ...base, note: "fixing route.py" },
+    });
+  });
+
+  test("a hand-edited document drops any invalid fallback rule while keeping valid settings, and still refuses non-arrays or >32 entries", () => {
+    const good = { repository: "acme/web", until: "2099-01-01T00:00:00.000Z", note: "safe note" };
+    const invalidRules: unknown[] = [
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: "fix\u202Eit" },
+      { repository: " acme/api", until: "2099-01-01T00:00:00.000Z" },
+      { repository: "\uFEFF*", until: "2099-01-01T00:00:00.000Z" },
+      { repository: "acme/api\n", until: "2099-01-01T00:00:00.000Z" },
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: 123 },
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", note: "x".repeat(257) },
+      { repository: "acme/api", until: "not-a-date" },
+      { repository: "acme/api", until: "2099-01-01T00:00:00.000Z", extra: true },
+      "not-an-object",
+    ];
+    const parsed = PrRadarSettingsSchema.parse({
+      routingLabelPrefixes: "ade.kind",
+      routingLabelFallbacks: [...invalidRules, good],
+    });
+    expect(parsed.routingLabelPrefixes).toBe("ade.kind");
+    expect(parsed.routingLabelFallbacks).toEqual([good]);
+
+    // Non-arrays and lists over 32 entries are still rejected.
+    expect(PrRadarSettingsSchema.safeParse({ routingLabelFallbacks: "bad" }).success).toBe(false);
+    const overLimit = Array.from({ length: 33 }, () => ({
+      repository: "acme/api",
+      until: "2099-01-01T00:00:00.000Z",
+      note: "fix\u202Eit",
+    }));
+    expect(PrRadarSettingsSchema.safeParse({ routingLabelFallbacks: overLimit }).success).toBe(
+      false,
+    );
+  });
+
+  test("a document that is not an object passes through for the schema to refuse", () => {
+    for (const odd of [null, "x", [1]]) {
+      expect(migratePrRadarSettings(odd, 1)).toBe(odd);
+    }
+  });
+
+  test("the saved settings document is version 3 and migrates older ones", () => {
+    expect(prRadarSettings.version).toBe(3);
     expect(prRadarSettings.migrate).toBe(migratePrRadarSettings);
   });
 
