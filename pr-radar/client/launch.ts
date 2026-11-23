@@ -3,7 +3,7 @@ import {
   type LabelPolicy,
   RoutedLabelsBlockedError,
 } from "../shared/routed-labels";
-import type { PrRadarSettings } from "../shared/settings";
+import { type PrRadarSettings, PrRadarSettingsSchema } from "../shared/settings";
 import type { RoutingScriptResult } from "../shared/viewer-scope";
 import {
   type AgentLaunchOverrides,
@@ -57,10 +57,41 @@ export interface PreparedCwd {
   warning?: string;
 }
 
+export type SettingsReadResult =
+  | { status: "ready"; revision: string; values: unknown }
+  | { status: "invalid"; revision: string; error: string };
+
+export type ReadPrRadarSettingsRpc = (input: Record<string, never>) => Promise<SettingsReadResult>;
+
+/**
+ * Reads and validates the current PR Radar settings directly from the daemon. Throws on an invalid
+ * status, schema parse failure, or RPC error so launches fail closed instead of reusing a stale or
+ * default policy.
+ */
+export async function readCurrentLabelPolicy(
+  readSettings: ReadPrRadarSettingsRpc,
+): Promise<PrRadarSettings> {
+  const result = await readSettings({});
+  if (result.status !== "ready") {
+    const reason = result.error.trim();
+    throw new Error(
+      reason ? `PR Radar settings are invalid: ${reason}` : "PR Radar settings are invalid.",
+    );
+  }
+  const parsed = PrRadarSettingsSchema.safeParse(result.values);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((issue) => issue.message).join("; ");
+    throw new Error(
+      detail ? `PR Radar settings are invalid: ${detail}` : "PR Radar settings are invalid.",
+    );
+  }
+  return parsed.data;
+}
+
 export interface LaunchDeps {
   paseo: LaunchPaseo;
   prepareCwd(input: PrepareCwdInput): Promise<PreparedCwd>;
-  policy: LabelPolicy;
+  readPolicy(): Promise<LabelPolicy>;
   now(): number;
 }
 
@@ -71,8 +102,9 @@ export interface LaunchedAgent {
 
 /**
  * Starts the agent for a Start New Agent request, from the modal or from auto-launch. The routing
- * script's labels are validated here, before any worktree is prepared, so a path that skips its own
- * check still cannot launch with a label set PR Radar rejected.
+ * script's labels are validated against the live settings policy before any worktree is prepared
+ * and again right before `agents.create`, so neither a caller that skips its own check nor a
+ * policy change during preparation can launch with a label set PR Radar rejects.
  */
 export async function launchNewAgent(
   deps: LaunchDeps,
@@ -82,14 +114,16 @@ export async function launchNewAgent(
   if (!row.number) {
     throw new Error("An issue or pull request number is required to start a new agent.");
   }
-  const decide = () =>
-    decideRoutedLabels({
+  const decide = async () => {
+    const policy = await deps.readPolicy();
+    return decideRoutedLabels({
       labels: request.overrides.labels,
       repository: row.repository,
-      policy: deps.policy,
+      policy,
       now: deps.now(),
     });
-  const early = decide();
+  };
+  const early = await decide();
   if (early.status === "blocked") {
     throw new RoutedLabelsBlockedError(early.message, early.rejected);
   }
@@ -119,9 +153,10 @@ export async function launchNewAgent(
     profiles.find((candidate) => candidate.name.toLowerCase() === "model router") ??
     profiles[0];
 
-  // Preparing the worktree can be slow (a clone, a fetch), and a fallback rule may end meanwhile:
-  // decide again on the clock now, so an expired rule cannot launch an agent without its labels.
-  const decision = decide();
+  // Preparing the worktree can be slow (a clone, a fetch), and the saved policy or a fallback rule
+  // may change or end meanwhile: read the current settings and clock right before creating the
+  // agent, so a prefix added during preparation or an expired rule cannot be bypassed.
+  const decision = await decide();
   if (decision.status === "blocked") {
     throw new RoutedLabelsBlockedError(decision.message, decision.rejected);
   }

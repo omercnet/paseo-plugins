@@ -10,11 +10,22 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { applyAutoRouting, type LaunchDeps, launchNewAgent } from "../client/launch";
+import {
+  applyAutoRouting,
+  type LaunchDeps,
+  launchNewAgent,
+  type ReadPrRadarSettingsRpc,
+  readCurrentLabelPolicy,
+  type SettingsReadResult,
+} from "../client/launch";
 import type { RadarRow } from "../client/radar";
 import type { StartAgentLaunchRequest } from "../client/start-agent-modal";
 import contribute from "../index.server";
-import { decideRoutedLabels, RoutedLabelsBlockedError } from "../shared/routed-labels";
+import {
+  decideRoutedLabels,
+  type LabelPolicy,
+  RoutedLabelsBlockedError,
+} from "../shared/routed-labels";
 import {
   migratePrRadarSettings,
   type PrRadarSettings,
@@ -72,8 +83,15 @@ interface Launch {
   deps: LaunchDeps;
 }
 
+interface FakeLaunchOptions {
+  readPolicy?: () => Promise<LabelPolicy>;
+  onPrepare?: () => void | Promise<void>;
+  onLaunch?: (launch: Launch) => void;
+}
+
 // A launch fake that records what reaches Paseo: the workspace it opens and the agent it creates.
-function fakeLaunch(settings: PrRadarSettings): Launch {
+function fakeLaunch(settings: PrRadarSettings, options: FakeLaunchOptions = {}): Launch {
+  const readPolicy = options.readPolicy ?? (async () => settings);
   const launch: Launch = {
     opened: [],
     prepared: [],
@@ -85,8 +103,11 @@ function fakeLaunch(settings: PrRadarSettings): Launch {
             launch.opened.push(cwd);
             return {
               agents: {
-                create: async (options) => {
-                  launch.created.push({ labels: options.labels, title: options.title });
+                create: async (createOptions) => {
+                  launch.created.push({
+                    labels: createOptions.labels,
+                    title: createOptions.title,
+                  });
                   return { id: "agent-1" };
                 },
               },
@@ -101,12 +122,14 @@ function fakeLaunch(settings: PrRadarSettings): Launch {
       },
       prepareCwd: async (input) => {
         launch.prepared.push(input.repository);
+        await options.onPrepare?.();
         return { cwd: "/work/api-pr-42", cwdTag: "CWD-WORKTREE" };
       },
-      policy: settings,
+      readPolicy,
       now: () => NOW,
     },
   };
+  options.onLaunch?.(launch);
   return launch;
 }
 
@@ -149,8 +172,12 @@ async function run(
 }
 
 // Auto-launch: the routing result is applied to the defaults, with no preview.
-async function viaAuto(settings: PrRadarSettings, routed: RoutingScriptResult): Promise<Outcome> {
-  const launch = fakeLaunch(settings);
+async function viaAuto(
+  settings: PrRadarSettings,
+  routed: RoutingScriptResult,
+  options: FakeLaunchOptions = {},
+): Promise<Outcome> {
+  const launch = fakeLaunch(settings, options);
   const applied = applyAutoRouting({ settings, routed, profiles: [], row: row(), now: NOW });
   if (applied.status === "blocked") return { launch, launched: false, message: applied.message };
   const outcome = await run(
@@ -165,8 +192,12 @@ async function viaAuto(settings: PrRadarSettings, routed: RoutingScriptResult): 
 
 // Start New Agent modal: the preview disables Launch when the labels are blocked; otherwise the
 // request carries the routed labels as they came.
-async function viaModal(settings: PrRadarSettings, routed: RoutingScriptResult): Promise<Outcome> {
-  const launch = fakeLaunch(settings);
+async function viaModal(
+  settings: PrRadarSettings,
+  routed: RoutingScriptResult,
+  options: FakeLaunchOptions = {},
+): Promise<Outcome> {
+  const launch = fakeLaunch(settings, options);
   const preview = decideRoutedLabels({
     labels: routed.labels,
     repository: row().repository,
@@ -529,6 +560,278 @@ describe("a fallback rule that ends while the worktree is being prepared", () =>
     expect(launch.created[0]?.labels).toEqual({ "pr-radar.cwd": "CWD-WORKTREE" });
   });
 });
+
+describe("readCurrentLabelPolicy", () => {
+  test("returns parsed settings when the RPC reports ready, preserving raw prefixes", async () => {
+    const rawPrefixes = `team/,${cp(0xfeff)}`;
+    const readSettings: ReadPrRadarSettingsRpc = async () => ({
+      status: "ready",
+      revision: "rev-1",
+      values: { routingLabelPrefixes: rawPrefixes },
+    });
+    const policy = await readCurrentLabelPolicy(readSettings);
+    expect(policy.routingLabelPrefixes).toBe(rawPrefixes);
+    expect(policy.routingLabelFallbacks).toEqual([]);
+  });
+
+  test("throws when the RPC reports invalid settings", async () => {
+    await expect(
+      readCurrentLabelPolicy(async () => ({
+        status: "invalid",
+        revision: "rev-1",
+        error: "corrupt json",
+      })),
+    ).rejects.toThrow("PR Radar settings are invalid: corrupt json");
+
+    await expect(
+      readCurrentLabelPolicy(async () => ({
+        status: "invalid",
+        revision: "rev-1",
+        error: "   ",
+      })),
+    ).rejects.toThrow("PR Radar settings are invalid.");
+  });
+
+  test("throws when ready values fail schema validation", async () => {
+    await expect(
+      readCurrentLabelPolicy(async () => ({
+        status: "ready",
+        revision: "rev-1",
+        values: { routingLabelPrefixes: 42 },
+      })),
+    ).rejects.toThrow(/PR Radar settings are invalid:/);
+
+    await expect(
+      readCurrentLabelPolicy(async () => ({
+        status: "ready",
+        revision: "rev-1",
+        values: { unexpectedField: true },
+      })),
+    ).rejects.toThrow(/PR Radar settings are invalid:/);
+  });
+
+  test("propagates RPC rejection", async () => {
+    await expect(
+      readCurrentLabelPolicy(async () => {
+        throw new Error("host offline");
+      }),
+    ).rejects.toThrow("host offline");
+  });
+});
+
+describe.each(PATHS)(
+  "policy changes during worktree preparation, through %s",
+  (_name, launchVia) => {
+    const activeRule = {
+      repository: "acme/api",
+      until: new Date(NOW + DAY).toISOString(),
+      note: "fix",
+    };
+
+    function liveSettings(initial: PrRadarSettings) {
+      let response: () => Promise<SettingsReadResult> = async () => ({
+        status: "ready",
+        revision: "rev-1",
+        values: initial,
+      });
+      const readSettings: ReadPrRadarSettingsRpc = () => response();
+      return {
+        readPolicy: () => readCurrentLabelPolicy(readSettings),
+        setValues(values: PrRadarSettings) {
+          response = async () => ({ status: "ready", revision: "rev-2", values });
+        },
+        setResponse(next: () => Promise<SettingsReadResult>) {
+          response = next;
+        },
+      };
+    }
+
+    test("a prefix added during preparation blocks the fallback and creates no agent", async () => {
+      const initial = settingsWith({
+        routingLabelPrefixes: "",
+        routingLabelFallbacks: [activeRule],
+      });
+      const live = liveSettings(initial);
+      const outcome = await launchVia(
+        initial,
+        { labels: { "ade.kind": "external-review", "paseo.x": "y" } },
+        {
+          readPolicy: live.readPolicy,
+          onPrepare: () => {
+            live.setValues(settingsWith({ ...initial, routingLabelPrefixes: "ade.kind" }));
+          },
+        },
+      );
+      expect(outcome.launch.prepared).toEqual(["acme/api"]);
+      expect(outcome.launched).toBe(false);
+      expect(outcome.message).toContain("cannot drop it");
+      expect(outcome.launch.created).toEqual([]);
+    });
+
+    test("a malformed prefix saved during preparation blocks the fallback and creates no agent", async () => {
+      const initial = settingsWith({
+        routingLabelPrefixes: "",
+        routingLabelFallbacks: [activeRule],
+      });
+      const live = liveSettings(initial);
+      const outcome = await launchVia(
+        initial,
+        { labels: { team: "core", "paseo.x": "y" } },
+        {
+          readPolicy: live.readPolicy,
+          onPrepare: () => {
+            live.setValues(
+              settingsWith({ ...initial, routingLabelPrefixes: `team/,${cp(0xfeff)}` }),
+            );
+          },
+        },
+      );
+      expect(outcome.launch.prepared).toEqual(["acme/api"]);
+      expect(outcome.launched).toBe(false);
+      expect(outcome.message).toContain("cannot be used until it is fixed");
+      expect(outcome.launch.created).toEqual([]);
+    });
+
+    test("a fallback rule removed during preparation blocks the launch and creates no agent", async () => {
+      const initial = settingsWith({
+        routingLabelPrefixes: "",
+        routingLabelFallbacks: [activeRule],
+      });
+      const live = liveSettings(initial);
+      const outcome = await launchVia(
+        initial,
+        { labels: { team: "core", "paseo.x": "y" } },
+        {
+          readPolicy: live.readPolicy,
+          onPrepare: () => {
+            live.setValues(settingsWith({ ...initial, routingLabelFallbacks: [] }));
+          },
+        },
+      );
+      expect(outcome.launch.prepared).toEqual(["acme/api"]);
+      expect(outcome.launched).toBe(false);
+      expect(outcome.message).toContain("Launch blocked");
+      expect(outcome.launch.created).toEqual([]);
+    });
+
+    test("settings becoming invalid during preparation rejects and creates no agent", async () => {
+      const initial = settingsWith({
+        routingLabelPrefixes: "",
+        routingLabelFallbacks: [activeRule],
+      });
+      const live = liveSettings(initial);
+      let inspected: Launch | undefined;
+      await expect(
+        launchVia(
+          initial,
+          { labels: { team: "core", "paseo.x": "y" } },
+          {
+            readPolicy: live.readPolicy,
+            onLaunch: (launch) => {
+              inspected = launch;
+            },
+            onPrepare: () => {
+              live.setResponse(async () => ({
+                status: "invalid",
+                revision: "rev-2",
+                error: "settings corrupted",
+              }));
+            },
+          },
+        ),
+      ).rejects.toThrow("PR Radar settings are invalid: settings corrupted");
+      expect(inspected?.prepared).toEqual(["acme/api"]);
+      expect(inspected?.created).toEqual([]);
+    });
+
+    test("a settings read RPC failure during preparation rejects and creates no agent", async () => {
+      const initial = settingsWith({
+        routingLabelPrefixes: "",
+        routingLabelFallbacks: [activeRule],
+      });
+      const live = liveSettings(initial);
+      let inspected: Launch | undefined;
+      await expect(
+        launchVia(
+          initial,
+          { labels: { team: "core", "paseo.x": "y" } },
+          {
+            readPolicy: live.readPolicy,
+            onLaunch: (launch) => {
+              inspected = launch;
+            },
+            onPrepare: () => {
+              live.setResponse(async () => {
+                throw new Error("daemon disconnected");
+              });
+            },
+          },
+        ),
+      ).rejects.toThrow("daemon disconnected");
+      expect(inspected?.prepared).toEqual(["acme/api"]);
+      expect(inspected?.created).toEqual([]);
+    });
+
+    test("valid labels pick up prefix changes saved during preparation", async () => {
+      const addedInitial = settingsWith({ routingLabelPrefixes: "" });
+      const addedLive = liveSettings(addedInitial);
+      const added = await launchVia(
+        addedInitial,
+        { labels: { "ade.kind": "external-review" } },
+        {
+          readPolicy: addedLive.readPolicy,
+          onPrepare: () => {
+            addedLive.setValues(settingsWith({ routingLabelPrefixes: "ade.kind" }));
+          },
+        },
+      );
+      expect(added.launch.prepared).toEqual(["acme/api"]);
+      expect(added.launched).toBe(true);
+      expect(added.launch.created[0]?.labels).toEqual({
+        "ade.kind": "external-review",
+        "pr-radar.cwd": "CWD-WORKTREE",
+      });
+
+      const removedInitial = settingsWith({ routingLabelPrefixes: "ade.kind" });
+      const removedLive = liveSettings(removedInitial);
+      const removed = await launchVia(
+        removedInitial,
+        { labels: { "ade.kind": "external-review" } },
+        {
+          readPolicy: removedLive.readPolicy,
+          onPrepare: () => {
+            removedLive.setValues(settingsWith({ routingLabelPrefixes: "" }));
+          },
+        },
+      );
+      expect(removed.launch.prepared).toEqual(["acme/api"]);
+      expect(removed.launched).toBe(true);
+      expect(removed.launch.created[0]?.labels).toEqual({
+        "pr-radar.route.ade.kind": "external-review",
+        "pr-radar.cwd": "CWD-WORKTREE",
+      });
+    });
+
+    test("a prefix saved before preparation starts blocks before prepareCwd runs", async () => {
+      const staleSnapshot = settingsWith({
+        routingLabelPrefixes: "",
+        routingLabelFallbacks: [activeRule],
+      });
+      const live = liveSettings(
+        settingsWith({ ...staleSnapshot, routingLabelPrefixes: "ade.kind" }),
+      );
+      const outcome = await launchVia(
+        staleSnapshot,
+        { labels: { "ade.kind": "external-review", "paseo.x": "y" } },
+        { readPolicy: live.readPolicy },
+      );
+      expect(outcome.launch.prepared).toEqual([]);
+      expect(outcome.launched).toBe(false);
+      expect(outcome.message).toContain("cannot drop it");
+      expect(outcome.launch.created).toEqual([]);
+    });
+  },
+);
 
 describe("boundary: the registered routing handler to the launched agent", () => {
   const dirs: string[] = [];
