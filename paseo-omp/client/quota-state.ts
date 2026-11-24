@@ -1,5 +1,5 @@
 import { accountTags } from "../shared/account-tags";
-import type { OmpQuota } from "../shared/quota";
+import type { OmpQuota, OmpSessionAccount } from "../shared/quota";
 import { isOmpProvider } from "./omp-store-state";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -71,31 +71,59 @@ export function quotasForProvider(
       : [];
 }
 
+/**
+ * The quotas the pill summarizes: the session's account in use when OMP named one and it has a
+ * recorded usage value, otherwise every account of the provider.
+ */
+export function quotasInUse(
+  quotas: readonly OmpQuota[],
+  provider: string | null,
+  includeAll: boolean,
+  inUse: OmpSessionAccount | null,
+): OmpQuota[] {
+  const matching = quotasForProvider(quotas, provider, includeAll);
+  if (!provider || !inUse) return matching;
+  const own = matching.filter((quota) => inUse.quotaAccountKeys.includes(quota.accountKey));
+  return own.some((quota) => quota.usedFraction !== null) ? own : matching;
+}
+
+/**
+ * The pill shows only the percentage beside the provider icon, so a long provider name never
+ * truncates the number; the title names the provider and the account it describes.
+ */
 export function quotaSummaryForProvider(
   quotas: readonly OmpQuota[],
   provider: string | null,
   includeAll = false,
-): { visible: boolean; label: string } {
-  const matching = quotasForProvider(quotas, provider, includeAll);
-  const label = provider ? quotaProviderLabel(provider) : "Quotas";
+  inUse: OmpSessionAccount | null = null,
+): { visible: boolean; label: string; title: string } {
+  const matching = quotasInUse(quotas, provider, includeAll, inUse);
+  const own =
+    provider !== null &&
+    inUse !== null &&
+    matching.length > 0 &&
+    matching.every((quota) => inUse.quotaAccountKeys.includes(quota.accountKey));
   const used = matching.flatMap((quota) =>
     quota.usedFraction === null ? [] : [quota.usedFraction],
   );
-  if (used.length === 0) {
-    return provider
-      ? { visible: true, label: `${quotaProviderLabel(provider)} · —` }
-      : { visible: includeAll, label: "Quotas · —" };
+  const peak = used.length === 0 ? null : `${Math.round(Math.max(...used) * 100)}%`;
+  const scope = provider
+    ? [quotaProviderLabel(provider), own && inUse ? inUse.label : "all accounts"].join(" · ")
+    : "All providers";
+  const title = `${scope} · ${peak ?? "no recorded usage"} (last recorded usage, not live)`;
+  if (!provider) {
+    return { visible: includeAll, label: `Quotas · ${peak ?? "n/a"}`, title };
   }
-  const peak = Math.round(Math.max(...used) * 100);
-  return { visible: true, label: `${label} · ${peak}%` };
+  return { visible: true, label: peak ?? "n/a", title };
 }
 
 export function quotaSeverityForProvider(
   quotas: readonly OmpQuota[],
   provider: string | null,
   includeAll = false,
+  inUse: OmpSessionAccount | null = null,
 ): QuotaSeverity {
-  const used = quotasForProvider(quotas, provider, includeAll).flatMap((quota) =>
+  const used = quotasInUse(quotas, provider, includeAll, inUse).flatMap((quota) =>
     quota.usedFraction === null ? [] : [quota.usedFraction],
   );
   return used.length === 0 ? "unknown" : quotaSeverityFromFraction(Math.max(...used));
@@ -153,6 +181,47 @@ export function quotaProviderGroups(
     return (b.peakFraction ?? -1) - (a.peakFraction ?? -1);
   });
   return groups;
+}
+
+export type QuotaSessionAccountGroup = QuotaAccountGroup & {
+  /** The OMP login this usage belongs to, when the session listed it. */
+  login: OmpSessionAccount | null;
+  /** OMP routes this session's requests to this account. */
+  inUse: boolean;
+};
+
+/** Links the current provider's accounts to the session's logins; the one in use sorts first. */
+export function quotaSessionAccounts(
+  accounts: readonly QuotaAccountGroup[],
+  logins: readonly OmpSessionAccount[],
+): QuotaSessionAccountGroup[] {
+  const linked = accounts.map((account) => {
+    const owns = (entry: OmpSessionAccount) => entry.quotaAccountKeys.includes(account.accountKey);
+    // Logins can share a usage account; the one in use keeps its mark.
+    const login = logins.find((entry) => entry.active && owns(entry)) ?? logins.find(owns);
+    return { ...account, login: login ?? null, inUse: login?.active === true };
+  });
+  return [...linked.filter((a) => a.inUse), ...linked.filter((a) => !a.inUse)];
+}
+
+/**
+ * Logins OMP names in use, or the provider's only one, that head no usage account: their usage is
+ * unrecorded or carries no identity to match. They are still shown, without limits.
+ */
+export function unlinkedSessionLogins(
+  accounts: readonly QuotaSessionAccountGroup[],
+  logins: readonly OmpSessionAccount[],
+): OmpSessionAccount[] {
+  return logins.filter(
+    (login) =>
+      (login.active || login.onlyLogin) &&
+      !accounts.some((account) => account.login?.credentialId === login.credentialId),
+  );
+}
+
+/** OMP's `/session pin` accepts this exact form for any stored OAuth login. */
+export function sessionPinCommand(credentialId: number): string {
+  return `/session pin OAuth credential #${credentialId}`;
 }
 
 function quotaAccountTags(quotas: readonly OmpQuota[], email: string | null): string[] {

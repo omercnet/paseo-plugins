@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { RpcInput } from "@getpaseo/plugin";
+import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import { z } from "zod";
-import type { listOmpQuotas, OmpQuota } from "../shared/quota";
-import { ompDataDir } from "./paths";
+import { storeForProvider } from "../shared/omp-store";
+import type { listOmpQuotas, listOmpSessionAccounts, OmpQuota } from "../shared/quota";
+import { ompDataDir, withOmpStore } from "./paths";
+import type { OmpLogoutAccount } from "./provider/omp-rpc-protocol";
+import { OmpRpcRequestRejectedError } from "./provider/omp-rpc-transport";
+import { isOmpPublicError, OmpPublicError } from "./provider/security";
+import type { OmpSubagentControlRegistry } from "./subagents";
 
 const QuotaRowSchema = z.object({
   provider: z.string(),
@@ -176,9 +182,264 @@ export function listOmpQuotasFrom(path: string, now = Date.now()): OmpQuota[] {
     return [];
   }
 }
-
 export function resolveListOmpQuotas(_input: RpcInput<typeof listOmpQuotas>): {
   quotas: OmpQuota[];
 } {
-  return { quotas: listOmpQuotasFrom(join(ompDataDir(), "agent.db")) };
+  return { quotas: listOmpQuotasFrom(defaultDatabasePath()) };
+}
+
+function defaultDatabasePath(): string {
+  return join(ompDataDir(), "agent.db");
+}
+
+function hashAccountKey(accountKey: string): string {
+  return createHash("sha256").update(accountKey).digest("hex");
+}
+
+type LoginIdentity = { email: string | null; accountId: string | null; orgId: string | null };
+
+/** OMP's usage_history account_key is `oauth|account:<id>|email:<email>|org:<id>`. */
+function usageKeyIdentity(accountKey: string): LoginIdentity {
+  const parts = new Map<string, string>();
+  for (const part of accountKey.split("|")) {
+    const colon = part.indexOf(":");
+    if (colon > 0) parts.set(part.slice(0, colon), part.slice(colon + 1));
+  }
+  return {
+    email: parts.get("email") || null,
+    accountId: parts.get("account") || null,
+    orgId: parts.get("org") || null,
+  };
+}
+
+/**
+ * OMP's own rule (`limitMatchesActiveAccount`, with `oauthMatchesActiveIdentity` for logins): the
+ * organization gates the identity, so differing organizations, or one present on only one side,
+ * never match; an email on both sides then decides, else the account id. A login with no base
+ * identity matches on the organization alone, as OMP checks that on the login, not the usage.
+ *
+ * Two parts of OMP's rules are left out. `projectId` is not compared: OMP's usage keys carry no
+ * project, and Antigravity logins share one project. An account id equal to the organization id
+ * (a ChatGPT workspace id every member shares, which `isSameOAuthAccount` skips) is not excluded:
+ * a usage key always carries the email where OMP recorded one, so the email decides first.
+ */
+function sameLogin(login: LoginIdentity, usage: LoginIdentity): boolean {
+  if (login.orgId !== null || usage.orgId !== null) {
+    if (login.orgId !== usage.orgId) return false;
+    if (login.email === null && login.accountId === null) return true;
+  }
+  if (login.email && usage.email) return login.email.toLowerCase() === usage.email.toLowerCase();
+  return login.accountId !== null && login.accountId === usage.accountId;
+}
+
+/** Any field OMP's identity rule compares, the organization included. */
+function hasIdentity(identity: LoginIdentity): boolean {
+  return identity.email !== null || identity.accountId !== null || identity.orgId !== null;
+}
+
+/**
+ * The usage accounts recorded for each login. Only identity fields leave the credential row. A login
+ * links only to usage whose identity matches its own, so a login without one (Copilot stores none)
+ * links to nothing: one stored login and one usage account do not prove the usage is that login's.
+ */
+export function quotaAccountKeysFor(
+  path: string,
+  provider: string,
+  credentialIds: readonly number[],
+): Map<number, string[]> {
+  const matched = new Map<number, string[]>(credentialIds.map((id) => [id, []]));
+  if (credentialIds.length === 0) return matched;
+  try {
+    const database = new DatabaseSync(path, { readOnly: true, timeout: 500 });
+    try {
+      const usageKeys = database
+        .prepare("SELECT DISTINCT account_key AS accountKey FROM usage_history WHERE provider = ?")
+        .all(provider)
+        .flatMap(({ accountKey }) => (typeof accountKey === "string" ? [accountKey] : []));
+      const rows = database
+        .prepare(
+          `SELECT id, json_extract(data, '$.email') AS email,
+                  json_extract(data, '$.accountId') AS accountId,
+                  json_extract(data, '$.orgId') AS orgId
+           FROM auth_credentials WHERE id IN (${credentialIds.map(() => "?").join(", ")})`,
+        )
+        .all(...credentialIds);
+      const text = (value: unknown) => (typeof value === "string" && value.trim()) || null;
+      for (const row of rows) {
+        if (typeof row.id !== "number") continue;
+        const login = {
+          email: text(row.email),
+          accountId: text(row.accountId),
+          orgId: text(row.orgId),
+        };
+        if (!hasIdentity(login)) continue;
+        matched.set(
+          row.id,
+          usageKeys.filter((key) => sameLogin(login, usageKeyIdentity(key))).map(hashAccountKey),
+        );
+      }
+    } finally {
+      database.close();
+    }
+  } catch {
+    // An unreadable database only loses the link between logins and their recorded usage.
+  }
+  return matched;
+}
+
+/** The agent's provider and, for an OMP session Paseo persisted, OMP's session id. */
+export type OmpSessionAgent = { provider: string; sessionId: string | null };
+export type OmpSessionAgentLookup = (agentId: string) => Promise<OmpSessionAgent | null>;
+
+/** Paseo's bundled `omp` provider and this plugin's providers both persist OMP's session id. */
+export function sessionAgentFromPaseo(paseo: PluginHandlerContext["paseo"]): OmpSessionAgentLookup {
+  return async (agentId) => {
+    try {
+      const agent = (await paseo.agents.ref(agentId).refresh())?.agent;
+      if (!agent) return null;
+      const persistence = agent.persistence;
+      const omp = persistence && /^omp(-|$)/u.test(persistence.provider);
+      return { provider: agent.provider, sessionId: (omp && persistence.sessionId) || null };
+    } catch {
+      return null;
+    }
+  };
+}
+
+const StickySchema = z.object({ type: z.string(), credentialId: z.number().int() });
+
+/**
+ * The provider's stored OAuth logins with the one OMP pinned to `sessionId` marked active. OMP
+ * persists that pin as `session:sticky:<provider>:<session id>` for 30 days past its last use; a
+ * session that never sent a request to the provider has none. Only identity fields are read.
+ */
+export function storedSessionLogins(
+  path: string,
+  provider: string,
+  sessionId: string,
+  nowSec = Math.floor(Date.now() / 1000),
+): OmpLogoutAccount[] {
+  try {
+    const database = new DatabaseSync(path, { readOnly: true, timeout: 500 });
+    try {
+      const sticky = database
+        .prepare("SELECT value FROM cache WHERE key = ? AND expires_at > ?")
+        .get(`session:sticky:${provider}:${sessionId}`, nowSec);
+      let active: number | null = null;
+      if (typeof sticky?.value === "string") {
+        try {
+          const parsed = StickySchema.safeParse(JSON.parse(sticky.value));
+          if (parsed.success && parsed.data.type === "oauth") active = parsed.data.credentialId;
+        } catch {
+          // An unreadable pin only loses the active marker.
+        }
+      }
+      const text = (value: unknown) => (typeof value === "string" && value.trim()) || null;
+      // Every stored credential, API keys included, so "the only login" counts what OMP can use.
+      return database
+        .prepare(
+          `SELECT id, credential_type AS type, json_extract(data, '$.email') AS email,
+                  json_extract(data, '$.accountId') AS accountId,
+                  json_extract(data, '$.orgName') AS orgName
+           FROM auth_credentials
+           WHERE provider = ? AND disabled_cause IS NULL
+           ORDER BY id`,
+        )
+        .all(provider)
+        .flatMap((row): OmpLogoutAccount[] => {
+          if (typeof row.id !== "number") return [];
+          if (row.type !== "oauth") {
+            return [
+              {
+                credentialId: row.id,
+                provider,
+                label: `API key #${row.id}`,
+                type: "api_key",
+                active: false,
+              },
+            ];
+          }
+          // OMP's own label: the email or account id, then the organization in parentheses.
+          const base = text(row.email) ?? text(row.accountId) ?? `OAuth credential #${row.id}`;
+          const org = text(row.orgName);
+          return [
+            {
+              credentialId: row.id,
+              provider,
+              label: org && org !== base ? `${base} (${org})` : base,
+              type: "oauth",
+              active: row.id === active,
+            },
+          ];
+        });
+    } finally {
+      database.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Logins and usage come from the agent's own store: a named-profile agent never reads the daemon
+ * default store, whose credential ids belong to other accounts. The store follows the provider
+ * Paseo reports for the agent, not anything the client sends.
+ */
+export async function resolveListOmpSessionAccounts(
+  input: RpcInput<typeof listOmpSessionAccounts>,
+  registry: OmpSubagentControlRegistry,
+  findAgent: OmpSessionAgentLookup,
+): Promise<RpcOutput<typeof listOmpSessionAccounts>> {
+  const agent = await findAgent(input.agentId);
+  // Without the agent its store is unknown; answering from the default store could name another
+  // store's login that happens to share a credential id.
+  if (!agent) return { accounts: [] };
+  return await withOmpStore(storeForProvider(agent.provider), async () => {
+    const databasePath = defaultDatabasePath();
+    const logins = await sessionLogins(input, registry, agent.sessionId, databasePath);
+    const oauth = logins.filter((login) => login.type === "oauth");
+    const keys = quotaAccountKeysFor(
+      databasePath,
+      input.provider,
+      oauth.map((login) => login.credentialId),
+    );
+    // One stored credential does not prove use (an environment or explicit key can serve the
+    // session), so OMP's own `active` stands and the sole login is only flagged as such.
+    const onlyLogin = logins.length === 1 && oauth.length === 1;
+    return {
+      accounts: oauth.map((login) => ({
+        credentialId: login.credentialId,
+        label: login.label,
+        active: login.active,
+        onlyLogin,
+        quotaAccountKeys: keys.get(login.credentialId) ?? [],
+      })),
+    };
+  });
+}
+
+/**
+ * A live OMP Plugin session answers itself. Any other OMP session (Paseo's bundled `omp` provider,
+ * or a plugin session not open in this daemon) falls back to the pin OMP recorded for it.
+ */
+async function sessionLogins(
+  input: RpcInput<typeof listOmpSessionAccounts>,
+  registry: OmpSubagentControlRegistry,
+  sessionId: string | null,
+  databasePath: string,
+): Promise<OmpLogoutAccount[]> {
+  const controls = registry.get(input.agentId);
+  if (!controls) {
+    return sessionId ? storedSessionLogins(databasePath, input.provider, sessionId) : [];
+  }
+  try {
+    return await controls.listProviderAccounts(input.provider);
+  } catch (error) {
+    if (isOmpPublicError(error)) throw error;
+    if (error instanceof OmpRpcRequestRejectedError && error.code === "unsupported_command") {
+      throw new OmpPublicError("Update OMP to show which login this session uses");
+    }
+    // Native OMP error text is never forwarded.
+    throw new OmpPublicError("OMP could not list this session's logins");
+  }
 }
