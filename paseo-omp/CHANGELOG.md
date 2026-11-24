@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.8.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.8.1...paseo-omp-v5.8.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **paseo-omp:** classify the OMP 19.1.0 RPC commands and call canary MCP tools as commands ([#682](https://github.com/omercnet/paseo-plugins/issues/682)) ([84e3579](https://github.com/omercnet/paseo-plugins/commit/84e35797e0ab7367719f2e864351becf82e886bd))
+
 ## [5.8.1](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.8.0...paseo-omp-v5.8.1) (2026-11-22)
 
 

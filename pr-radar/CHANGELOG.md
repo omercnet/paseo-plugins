@@ -6,6 +6,13 @@
 
 * Migrate PR Radar to Paseo 0.8 runtime entries.
 
+## [3.5.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.4.0...pr-radar-v3.5.0) (2026-11-23)
+
+
+### Features
+
+* **pr-radar:** temporary label fallback rules that never drop a downgrade label ([#676](https://github.com/omercnet/paseo-plugins/issues/676)) ([@djbclark](https://github.com/djbclark)) ([02b2052](https://github.com/omercnet/paseo-plugins/commit/02b205294afbea96dac7345e60ebdd81c7a450ca))
+
 ## [3.4.0](https://github.com/omercnet/paseo-plugins/compare/pr-radar-v3.3.0...pr-radar-v3.4.0) (2026-11-22)
 
 
