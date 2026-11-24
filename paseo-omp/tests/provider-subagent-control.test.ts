@@ -12,6 +12,7 @@ import {
 } from "../server/subagents";
 import { OMP_SUBAGENT_STRIP_KIND, ompSubagentStripSchema } from "../shared/subagents";
 import {
+  ALTERNATE_MODEL_PUBLIC_ID,
   EventLog,
   FakeOmpRuntime,
   ManualScheduler,
@@ -455,14 +456,18 @@ describe("OMP subagent controls", () => {
   test("names the OMP provider behind an agent's opaque model only while its session runs", async () => {
     const { connection, events, runtime, registry } = await createControlledHarness();
     await openSession(connection, events, "open-a", "session-a", { PASEO_AGENT_ID: "agent-a" });
-    const provider = (agentId: string) =>
-      resolveGetOmpSessionModelProvider({ agentId }, registry).provider;
+    const provider = (agentId: string, model: string) =>
+      resolveGetOmpSessionModelProvider({ agentId, model }, registry).provider;
 
-    expect(provider("agent-a")).toBe("anthropic");
-    expect(provider("agent-unknown")).toBeNull();
+    expect(provider("agent-a", MODEL_PUBLIC_ID)).toBe("anthropic");
+    // The answer is for the model the caller saw, not the session's current one: a lookup for a
+    // model the agent left (A, then B, then A again) still names that model's provider.
+    expect(provider("agent-a", ALTERNATE_MODEL_PUBLIC_ID)).toBe("openai");
+    expect(provider("agent-a", "omp:model:unknown")).toBeNull();
+    expect(provider("agent-unknown", MODEL_PUBLIC_ID)).toBeNull();
     sessionAt(runtime, 0).emit({ type: "process_exit", error: "OMP exited between turns" });
     await Promise.resolve();
-    expect(provider("agent-a")).toBeNull();
+    expect(provider("agent-a", MODEL_PUBLIC_ID)).toBeNull();
     await connection.close();
   });
 
@@ -472,6 +477,7 @@ describe("OMP subagent controls", () => {
       cancelSubagent: async () => false,
       steerSubagent: async () => {},
       modelProvider: () => null,
+      listProviderAccounts: async () => [],
     });
     const older = controls();
     const newer = controls();

@@ -1,5 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
 vi.mock("../client/hub-icon", () => ({ OMP_ICON: { svg: "<svg></svg>" } }));
 vi.mock("../client/hub-popover", () => ({ HubPopover: () => null }));
@@ -24,8 +24,23 @@ vi.mock("../client/ast-edit", () => ({ OmpAstEditCard: () => null }));
 import contribute from "../index.client";
 import { getOmpSessionModelProvider, listOmpQuotas } from "../shared/quota";
 
+// Settings that relocate OMP's store; none may reach a test from the runner's environment.
+const OMP_LOCATION_ENV = [
+  "OMP_AGENT_DIR",
+  "OMP_PROFILE",
+  "PASEO_OMP_AGENT_DIR",
+  "PI_CODING_AGENT_DIR",
+  "PI_CONFIG_DIR",
+  "PI_PROFILE",
+];
+
+beforeEach(() => {
+  for (const name of OMP_LOCATION_ENV) vi.stubEnv(name, undefined);
+});
+
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 test("owned agent directory updates reconcile new agent pills and cached quota results", async () => {
@@ -143,7 +158,7 @@ test("owned agent directory updates reconcile new agent pills and cached quota r
       expect.objectContaining({ visible: true, label: "Quotas · 20%" }),
     );
     expect(quota("default").update).toHaveBeenLastCalledWith(
-      expect.objectContaining({ visible: true, label: "Anthropic · 50%" }),
+      expect.objectContaining({ visible: true, label: "50%" }),
     );
     expect(quota("codex").update).not.toHaveBeenCalled();
     expect(
@@ -187,7 +202,10 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     { id: "ended", provider: "omp-plugin", model: "omp:model:opaque", status: "closed" },
     // A server without the RPC (older, or reloading) rejects it.
     { id: "older", provider: "omp-plugin", model: "omp:model:opaque", status: "idle" },
+    // A live session whose OMP runtime is down answers null until it recovers.
+    { id: "recovering", provider: "omp-plugin", model: "omp:model:opaque", status: "idle" },
   ];
+  let runtimeRecovered = false;
   let onDirectoryUpdate = () => {};
   const buttons: Array<{ id: string; agentId: string; update: ReturnType<typeof vi.fn> }> = [];
   const rpc = vi.fn(async (definition, input) => {
@@ -196,6 +214,9 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     }
     if (definition === getOmpSessionModelProvider) {
       if (input.agentId === "older") throw new Error("unknown operation");
+      if (input.agentId === "recovering") {
+        return { provider: runtimeRecovered ? "openai-codex" : null };
+      }
       return { provider: input.agentId === "live" ? "openai-codex" : null };
     }
     if (definition !== listOmpQuotas) return { processes: [] };
@@ -208,7 +229,9 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     };
   });
   const registration = () => () => {};
+  let passes = 0;
   const list = async (options?: { subscribe?: object }) => {
+    if (!options?.subscribe) passes += 1;
     const result = {
       entries: agents.map((agent) => ({
         agent: { ...agent, cwd: "/workspace", workspaceId: "workspace", archivedAt: null },
@@ -247,24 +270,33 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
   const dispose = contribute(client);
   const quota = (agentId: string) =>
     buttons.findLast((button) => button.id === "quota" && button.agentId === agentId)?.update;
-  const asked = () =>
+  const askedAll = () =>
     rpc.mock.calls
       .filter(([definition]) => definition === getOmpSessionModelProvider)
       .map(([, input]) => input.agentId);
+  const asked = () => askedAll().filter((id) => id !== "recovering");
   try {
     await vi.advanceTimersByTimeAsync(300);
     expect(quota("live")).toHaveBeenLastCalledWith(
-      expect.objectContaining({ label: "OpenAI · 30%" }),
+      expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
     );
     // A closed agent has no session to ask and keeps the all-provider summary.
     expect(quota("ended")).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: "Quotas · 90%" }),
     );
-    // A rejected lookup also keeps it.
+    // A rejected lookup also keeps it, and so does a null answer while the runtime is down.
     expect(quota("older")).toHaveBeenLastCalledWith(
       expect.objectContaining({ label: "Quotas · 90%" }),
     );
+    expect(quota("recovering")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "Quotas · 90%" }),
+    );
     expect(asked()).toEqual(["live", "older"]);
+    // Each lookup names the model it saw, so a late answer cannot label a model the agent left.
+    expect(rpc).toHaveBeenCalledWith(getOmpSessionModelProvider, {
+      agentId: "live",
+      model: "omp:model:opaque",
+    });
 
     // The same model and status reuse the answer, a rejection included; a new model asks again.
     onDirectoryUpdate();
@@ -290,14 +322,32 @@ test("summarizes an OMP Plugin agent's quota by the provider its live session na
     await vi.advanceTimersByTimeAsync(250);
     expect(asked()).toEqual(["live", "older", "live"]);
     expect(quota("live")).toHaveBeenLastCalledWith(
-      expect.objectContaining({ label: "OpenAI · 30%" }),
+      expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
     );
 
-    // A rejected lookup is retried once its back-off has passed, so a reloaded server recovers.
-    await vi.advanceTimersByTimeAsync(60_000);
+    // Missing answers are retried once the back-off ends, with no directory update: the directory
+    // may never change again, so the plugin schedules that pass itself.
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(1);
+    runtimeRecovered = true;
+    await vi.advanceTimersByTimeAsync(60_000 + 250);
+    expect(asked().filter((id) => id === "older")).toHaveLength(2);
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(2);
+    expect(quota("recovering")).toHaveBeenLastCalledWith(
+      expect.objectContaining({ label: "30%", title: expect.stringMatching(/^OpenAI · /u) }),
+    );
+    // The recovered answer is kept; only the rejection keeps its back-off.
+    await vi.advanceTimersByTimeAsync(60_000 + 250);
+    expect(asked().filter((id) => id === "older")).toHaveLength(3);
+    expect(askedAll().filter((id) => id === "recovering")).toHaveLength(2);
+
+    // The failing agent closes: its missing answer is dropped, so no retry pass is left to repeat.
+    agents[2].status = "closed";
     onDirectoryUpdate();
     await vi.advanceTimersByTimeAsync(250);
-    expect(asked().filter((id) => id === "older")).toHaveLength(2);
+    const passesAfterClose = passes;
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    expect(passes).toBe(passesAfterClose);
+    expect(asked().filter((id) => id === "older")).toHaveLength(3);
   } finally {
     dispose();
   }

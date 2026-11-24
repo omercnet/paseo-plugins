@@ -40,6 +40,7 @@ import type {
   OmpAvailableCommand,
   OmpBranchResult,
   OmpCompactionResult,
+  OmpLogoutAccount,
   OmpMessage,
   OmpModel,
   OmpRpcEvent,
@@ -482,13 +483,19 @@ export class OmpProviderSession implements OmpOpenedSession, OmpSubagentControls
     await target.runtime.steerSubagent(target.nativeId, message);
   }
 
-  /** Paseo publishes the model as an opaque id; only the session can map it back to OMP's model. */
-  modelProvider(): string | null {
+  /**
+   * Paseo publishes each model as an opaque id; only the session can map it back to OMP's model.
+   * The id is a hash of OMP's provider and model, so one id always names the same provider.
+   */
+  modelProvider(model: string): string | null {
     if (this.closed || this.runtimeDead) return null;
-    const model = this.configState.model
-      ? this.nativeModelsByPublicId.get(this.configState.model)
-      : undefined;
-    return model?.provider ?? null;
+    return this.nativeModelsByPublicId.get(model)?.provider ?? null;
+  }
+
+  /** The provider's stored logins as this session's runtime sees them; `active` marks its own. */
+  async listProviderAccounts(provider: string): Promise<OmpLogoutAccount[]> {
+    if (this.closed || this.runtimeDead) throw new OmpPublicError("The OMP session is closed");
+    return await this.runtime.getLogoutAccounts(provider);
   }
 
   /**
