@@ -71,7 +71,7 @@
       "name": "@omercnet/paseo-context-mode",
       "version": "4.0.8",
       "dependencies": {
-        "context-mode": "2.2.1",
+        "context-mode": "2.2.2",
       },
       "devDependencies": {
         "@biomejs/biome": "catalog:",
@@ -1066,7 +1066,7 @@
 
     "content-type": ["content-type@1.0.5", "", {}, "sha512-nTjqfcBFEipKdXCv4YDQWCfmcLZKm81ldF0pAopTvyrFGVbcR6P/VAAd5G7N+0tTr8QqiU0tFadD6FK4NtJwOA=="],
 
-    "context-mode": ["context-mode@2.2.1", "", { "bin": { "context-mode": "cli.mjs" } }, "sha512-mG9r7fIwGSx71Kpnnj4FT6j8bQGv3ibaUlCGbeEjNesFt/5r+7uj0SeGuNNURuQcRaNuGRQ8uOXVAn/vA/Ryaw=="],
+    "context-mode": ["context-mode@2.2.2", "", { "bin": { "context-mode": "cli.mjs" } }, "sha512-KzKfWxxa+rNKTgWoXA4yvxGRcBUvhq7nnKRQbCIfJrBixrgHh8nVnRtNHCJvammXNcfxhmzjt83rUXMSu9OXFw=="],
 
     "conventional-changelog-conventionalcommits": ["conventional-changelog-conventionalcommits@6.1.0", "", { "dependencies": { "compare-func": "^2.0.0" } }, "sha512-3cS3GEtR78zTfMzk0AizXKKIdN4OvSh7ibNz6/DPbhWWQu7LqE/8+/GqSodV+sywUR2gpJAdP/1JFf4XtN7Zpw=="],
 
