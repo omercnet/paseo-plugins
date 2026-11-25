@@ -8,13 +8,13 @@
       "name": "@omercnet/paseo-context-mode",
       "version": "4.0.8",
       "dependencies": {
-        "context-mode": "2.2.1"
+        "context-mode": "2.2.2"
       }
     },
     "node_modules/context-mode": {
-      "version": "2.2.1",
-      "resolved": "https://registry.npmjs.org/context-mode/-/context-mode-2.2.1.tgz",
-      "integrity": "sha512-mG9r7fIwGSx71Kpnnj4FT6j8bQGv3ibaUlCGbeEjNesFt/5r+7uj0SeGuNNURuQcRaNuGRQ8uOXVAn/vA/Ryaw==",
+      "version": "2.2.2",
+      "resolved": "https://registry.npmjs.org/context-mode/-/context-mode-2.2.2.tgz",
+      "integrity": "sha512-KzKfWxxa+rNKTgWoXA4yvxGRcBUvhq7nnKRQbCIfJrBixrgHh8nVnRtNHCJvammXNcfxhmzjt83rUXMSu9OXFw==",
       "license": "Elastic-2.0",
       "bin": {
         "context-mode": "cli.mjs"
