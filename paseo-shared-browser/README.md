@@ -439,7 +439,9 @@ node scripts/test-panel-video-mounted.mjs --tooling-root /tmp/shared-browser-dom
 
 The panel fixture also accepts `handoff`, `rapid`, `continuous` and `admission`.
 Run each variant for changes to media handoff or input policy. The `settlement`
-fixture checks late replies across viewer and controller replacement. Delete
+fixture checks late replies across viewer and controller replacement. `compose-text`
+renders the native compose toolbar action, verifies the shared menu flow and checks
+that web omits the action with `--platform android` and `--platform web`. Delete
 the tooling directory when done.
 
 Use the same command with `--fixture density` for six mounted controller/density

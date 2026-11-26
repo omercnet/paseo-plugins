@@ -1494,6 +1494,16 @@ export function SharedBrowserPanel({
 
   // Queued actions always resolve through this render's scoped mutation callbacks.
   // A callback captured before acquisition must never reuse its old control identity.
+  // Native typing must remain reachable when the menu's host overlay cannot open.
+  const composeToolbarAction = () => {
+    closeToolbarMenu();
+    requestControlled(
+      "compose browser text",
+      () => controlledActionsRef.current?.openCompose("compose"),
+      true,
+    );
+  };
+
   controlledActionsRef.current = {
     navigate,
     applyViewport,
@@ -1781,6 +1791,17 @@ export function SharedBrowserPanel({
               onPress={() => toggleToolbarMenu("display")}
             />
           </View>
+          {composeAvailable && layout.platform !== "web" ? (
+            <ChromeIconButton
+              styles={styles}
+              theme={theme}
+              label="Compose text"
+              icon="Pencil"
+              touchTarget
+              disabled={!viewerToken || (canControl && !canSendInput)}
+              onPress={composeToolbarAction}
+            />
+          ) : null}
           <ChromeIconButton
             styles={styles}
             theme={theme}
@@ -2314,14 +2335,7 @@ export function SharedBrowserPanel({
                   label="Compose text"
                   icon="Pencil"
                   disabled={!viewerToken || (canControl && !canSendInput)}
-                  onPress={() => {
-                    closeToolbarMenu();
-                    requestControlled(
-                      "compose browser text",
-                      () => controlledActionsRef.current?.openCompose("compose"),
-                      true,
-                    );
-                  }}
+                  onPress={composeToolbarAction}
                 />
               ) : null}
               <View ref={keysAnchorRef}>
