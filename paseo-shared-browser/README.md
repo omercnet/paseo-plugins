@@ -357,10 +357,11 @@ User-supplied `AGENT_BROWSER_*` variables are deliberately ignored.
 - The address-bar Browser menu contains a Send keys submenu and reconnect actions. On desktop,
   keys open beside the menu; on compact screens, Back returns to the parent menu. Extra keys
   are no longer shown below the canvas or in a separate dialog.
-- On native phones and compact web layouts, Compose text in that menu opens an explicit local
-  draft for keyboard or IME text, inserted once into the focused page field when you choose
-  Done. Native phones have no live software-keyboard relay; compact web also keeps canvas
-  typing. Extra keys remain available in the Send keys submenu.
+- On native phones, the toolbar Pencil button labelled Compose text is the primary way to
+  open an explicit local draft. Compose text in the Browser menu is the alternative.
+  On compact web layouts, Compose text is available in that menu. Text is inserted once into
+  the focused page field when you choose Done. Native phones have no live software-keyboard
+  relay; compact web also keeps canvas typing. Extra keys remain available in Send keys.
 - Local plain-text paste is forwarded; remote copy/cut are not synchronized to the local clipboard.
 - The address-bar mobile toggle changes shared emulation while preserving the current display
   dimensions and capture density. Choose a resolution explicitly to change the display.

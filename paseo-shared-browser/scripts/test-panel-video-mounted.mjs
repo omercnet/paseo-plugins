@@ -19,6 +19,7 @@ const { values } = parseArgs({
 });
 if (
   ![
+    "tab-focus",
     "handoff",
     "rapid",
     "continuous",
