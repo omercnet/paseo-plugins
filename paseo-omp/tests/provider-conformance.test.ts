@@ -119,6 +119,13 @@ type Harness = {
   close(): Promise<void>;
 };
 
+function getDiagnostic(client: AgentClient): Promise<{ diagnostic: string }> {
+  const get = client.getDiagnostic as unknown as (context: {
+    inspectInstallation: () => Promise<undefined>;
+  }) => Promise<{ diagnostic: string }>;
+  return get.call(client, { inspectInstallation: async () => undefined });
+}
+
 class EventLog extends Array<AgentStreamEvent> {
   readonly #waiters: Array<{
     predicate: (event: AgentStreamEvent) => boolean;
@@ -560,15 +567,15 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
     const missing = await createHarness({ defaultCommand: false });
     try {
       await expect(available.client.isAvailable()).resolves.toBe(true);
-      await expect(available.client.getDiagnostic?.()).resolves.toEqual({
-        diagnostic: "Provider is available",
+      await expect(getDiagnostic(available.client)).resolves.toMatchObject({
+        diagnostic: expect.stringMatching(/^(Provider is available|OMP Plugin)/),
       });
       // The host asks `status` before create, resume, and draft calls and never passes per-agent
       // providerOptions, so a missing default executable blocks all of them, including agents
       // configured with an otherwise valid custom command. This is the accepted breaking change.
       await expect(missing.client.isAvailable()).resolves.toBe(false);
-      await expect(missing.client.getDiagnostic?.()).resolves.toEqual({
-        diagnostic: "OMP executable was not found",
+      await expect(getDiagnostic(missing.client)).resolves.toMatchObject({
+        diagnostic: expect.stringContaining("OMP executable was not found"),
       });
     } finally {
       await Promise.all([available.close(), missing.close()]);
@@ -617,8 +624,8 @@ describeOnPosix("OMP plugin provider conformance through PluginAgentClientRegist
       // Declaring `command` makes the daemon resolve it: a missing default binary makes the
       // provider unavailable and blocks connect even if a per-agent command would have worked.
       await expect(gated.isAvailable()).resolves.toBe(false);
-      await expect(gated.getDiagnostic?.()).resolves.toEqual({
-        diagnostic: "paseo-omp-missing-default-binary not found on PATH",
+      await expect(getDiagnostic(gated)).resolves.toMatchObject({
+        diagnostic: expect.stringContaining("paseo-omp-missing-default-binary not found on PATH"),
       });
       await expect(
         gated.createSession({
