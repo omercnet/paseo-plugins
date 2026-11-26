@@ -14,10 +14,12 @@ const { values } = parseArgs({
     "tooling-root": { type: "string" },
     fixture: { type: "string", default: "handoff" },
     compact: { type: "boolean", default: false },
+    platform: { type: "string" },
   },
 });
 if (
   ![
+    "tab-focus",
     "handoff",
     "rapid",
     "continuous",
@@ -26,7 +28,7 @@ if (
     "control-gate",
     "control-gate-takeover",
     "control-gate-stale",
-    "tab-focus",
+    "compose-text",
   ].includes(values.fixture)
 )
   throw new Error("Unsupported panel fixture");
@@ -215,7 +217,7 @@ function PanelHost() {
   return React.createElement(SharedBrowserPanel, {
     theme: { colors: new Proxy({}, { get: () => "#777" }) },
     host: { id: "fixture", label: "Fixture" },
-    layout: { compact: values.compact, platform: "web" },
+    layout: { compact: values.compact, platform: values.platform ?? "web" },
     workspaceId: "workspace",
     tab,
   });
@@ -360,6 +362,50 @@ try {
       assert.equal(navigations[0].input.action.kind, "reload");
       assert.equal(navigations[0].input.controlToken, "c".repeat(32));
       console.log("PASS control dialog acquires then runs clicked action once");
+    }
+  } else if (values.fixture === "compose-text") {
+    const composeButton = document.querySelector('button[aria-label="Compose text"]');
+    if (values.platform === "web") {
+      assert.equal(composeButton, null, "native compose action stays out of desktop web chrome");
+      console.log("PASS native compose action is absent on desktop web");
+    } else {
+      const control = document.querySelector('button[aria-label="Take control"]');
+      assert(control, "take control");
+      await React.act(async () => control.click());
+      assert(composeButton, "native toolbar exposes compose text");
+      assert.equal(
+        composeButton.disabled,
+        false,
+        "compose is enabled while controlling a painted frame",
+      );
+      assert.equal(composeButton.style.width, "44px", "touch target width");
+      assert.equal(composeButton.style.height, "44px", "touch target height");
+      await React.act(async () => composeButton.click());
+      await flush(30);
+      assert(
+        document.querySelector('section[aria-label="Compose text"]'),
+        "toolbar opens the compose dialog",
+      );
+      await React.act(async () => document.querySelector('button[aria-label="Cancel"]').click());
+      await flush(30);
+      assert(
+        document.querySelector('button[aria-label="Browser menu"]'),
+        "toolbar stays independent from the menu",
+      );
+      await React.act(async () =>
+        document.querySelector('button[aria-label="Browser menu"]').click(),
+      );
+      await flush(30);
+      assert(document.querySelector('[role="menu"][aria-label="Browser menu"]'), "menu opens");
+      await React.act(async () =>
+        document.querySelector('[role="menuitem"][aria-label="Compose text"]').click(),
+      );
+      await flush(30);
+      assert(
+        document.querySelector('section[aria-label="Compose text"]'),
+        "menu opens the same compose dialog",
+      );
+      console.log("PASS native toolbar and menu share compose flow");
     }
   } else {
     const control = document.querySelector('button[aria-label="Take control"]');

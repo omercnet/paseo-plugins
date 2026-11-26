@@ -139,6 +139,10 @@ export function createStyles(theme: Theme, compact: boolean) {
       alignItems: "center",
       justifyContent: "center",
     },
+    chromeIconButtonTouch: {
+      width: DIMENSION.touch,
+      height: DIMENSION.touch,
+    },
     chromeIconButtonHovered: {
       backgroundColor: theme.colors.surface2,
     },

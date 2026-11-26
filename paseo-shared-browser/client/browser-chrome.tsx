@@ -37,13 +37,13 @@ interface CanvasPlaceholderStyles {
   canvasDetail: TextStyle;
 }
 
-interface ChromeIconButtonStyles {
+export interface ChromeIconButtonStyles {
   chromeIconButton: ViewStyle;
   chromeIconButtonHovered: ViewStyle;
   chromeIconButtonPressed: ViewStyle;
   chromeIconButtonDisabled: ViewStyle;
+  chromeIconButtonTouch?: ViewStyle;
 }
-
 /** Themed button leaf using public SDK/RN primitives. */
 export function ChromeIconButton({
   styles,
@@ -51,6 +51,7 @@ export function ChromeIconButton({
   label,
   icon,
   iconNode,
+  touchTarget = false,
   selected = false,
   expanded,
   disabled = false,
@@ -61,8 +62,9 @@ export function ChromeIconButton({
   label: string;
   icon: string;
   iconNode?: ReactNode;
-  expanded?: boolean;
+  touchTarget?: boolean;
   selected?: boolean;
+  expanded?: boolean;
   disabled?: boolean;
   onPress(): void;
 }) {
@@ -74,12 +76,14 @@ export function ChromeIconButton({
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ disabled, selected, ...(expanded === undefined ? {} : { expanded }) }}
+      hitSlop={touchTarget ? 8 : undefined}
       disabled={disabled}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onPress={onPress}
       style={({ pressed }) => [
         styles.chromeIconButton,
+        touchTarget ? styles.chromeIconButtonTouch : null,
         hovered ? styles.chromeIconButtonHovered : null,
         pressed ? styles.chromeIconButtonPressed : null,
         disabled ? styles.chromeIconButtonDisabled : null,
