@@ -50,6 +50,7 @@ const { writeFileSync } = require("node:fs");
 const S = ${JSON.stringify(scenario)};
 const args = process.argv.slice(2);
 if (S.logFile) require("node:fs").appendFileSync(S.logFile, JSON.stringify(args) + "\\n");
+if (args.includes("--mode")) process.stdout.write(JSON.stringify({ type: "ready", protocolVersion: 1 }) + "\\n");
 const print = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 const fail = (message) => { process.stderr.write(message + "\\n"); process.exit(1); };
 if (S.delayMs && args[0] === "usage" && args[1] === "--json") { const fs = require("node:fs"); const n = fs.existsSync(S.delayFile) ? Number(fs.readFileSync(S.delayFile, "utf8")) : 0; fs.writeFileSync(S.delayFile, String(n + 1)); const wait = n === 1 ? S.delayMs : n === 2 ? S.delayMs * 2 : 0; if (wait) { const until = Date.now() + wait; while (Date.now() < until) {} } }

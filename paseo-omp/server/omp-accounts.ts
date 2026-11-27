@@ -1,7 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { accountTags } from "../shared/account-tags";
 import {
@@ -20,7 +23,7 @@ import {
 import type { OmpStore } from "../shared/omp-store";
 import { SerialMutationQueue } from "./mutation-queue";
 import { resolveOmpExecutable } from "./omp-settings";
-import { currentOmpEnvironment } from "./paths";
+import { currentOmpEnvironment, ompAgentDir } from "./paths";
 import { OmpPublicError } from "./provider/security";
 import { buildStatefulCommandEnv, defaultSpawn, runBounded } from "./provider-diagnostics";
 
@@ -33,9 +36,10 @@ const LOGIN_TIMEOUT_MS = 15 * 60_000;
 const FINISHED_LOGIN_TTL_MS = 10 * 60_000;
 const KILL_GRACE_MS = 1_000;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MAX_RPC_STDERR_BYTES = 64 * 1024;
 const BALANCE_SAMPLES = "20";
-
-/** A bare rpc session: no tools, extensions or context, nothing saved. Only account commands run. */
+const MODEL_STARTUP_ERROR =
+  "OMP needs a default model for slash-command helpers. Configure one with OMP's /model command.";
 const RPC_ARGS = [
   "--mode",
   "rpc",
@@ -48,6 +52,24 @@ const RPC_ARGS = [
   "--no-lsp",
   "--no-title",
 ];
+const MODEL_TESTS: readonly { provider: string; selector: string }[] = [
+  { provider: "anthropic", selector: "anthropic/claude-haiku-4-5" },
+  { provider: "openai", selector: "openai/gpt-4.1" },
+  { provider: "google", selector: "google/gemini-2.5-flash" },
+];
+
+function fallbackModels(env: NodeJS.ProcessEnv): readonly string[] {
+  try {
+    const { disabledProviders } = z
+      .object({ disabledProviders: z.array(z.string()).default([]) })
+      .parse(parseYaml(readFileSync(join(ompAgentDir(env), "config.yml"), "utf8")));
+    return MODEL_TESTS.filter((entry) => !disabledProviders.includes(entry.provider)).map(
+      (entry) => entry.selector,
+    );
+  } catch {
+    return MODEL_TESTS.map((entry) => entry.selector);
+  }
+}
 
 export class OmpAccountsError extends OmpPublicError {}
 
@@ -262,52 +284,87 @@ export interface OmpRpcHandlers {
 
 /** One short-lived `omp --mode rpc` process, spoken to in JSON lines. */
 export class OmpRpcProcess {
-  private readonly child: ChildProcess;
+  private child: ChildProcess;
   private readonly pending = new Map<
     string,
-    { resolve(data: unknown): void; reject(error: Error): void }
+    {
+      readonly frame: Record<string, unknown>;
+      readonly timer: ReturnType<typeof setTimeout>;
+      resolve(data: unknown): void;
+      reject(error: Error): void;
+    }
   >();
   private nextId = 0;
+  private readonly models: readonly string[];
+  private attempt = 0;
+  private starting = true;
   private closed = false;
+  private stderr = new Map<ChildProcess, string>();
   private killer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
-    command: OmpCommand,
+    private readonly command: OmpCommand,
     private readonly handlers: OmpRpcHandlers = {},
   ) {
-    this.child = spawn(command.executable, RPC_ARGS, {
+    this.models = fallbackModels(command.env);
+    this.child = this.start();
+  }
+
+  private start(): ChildProcess {
+    const selector = this.attempt === 0 ? undefined : this.models[this.attempt - 1];
+    const args = selector === undefined ? RPC_ARGS : [...RPC_ARGS, "--model", selector];
+    const child = spawn(this.command.executable, args, {
       cwd: tmpdir(),
-      env: command.env,
+      env: this.command.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    this.child.stdin?.on("error", () => undefined);
-    this.child.stderr?.resume();
-    if (this.child.stdout) {
-      createInterface({ input: this.child.stdout }).on("line", (line) => this.receive(line));
-    }
-    this.child.on("error", (error) => this.failAll(error));
-    this.child.on("close", (code) => {
-      const unexpected = !this.closed;
-      this.closed = true;
-      clearTimeout(this.killer);
-      const status = code === null ? "" : ` with code ${code}`;
-      this.failAll(new OmpAccountsError(`omp exited${status}`));
-      if (unexpected) this.handlers.onExit?.();
+    this.stderr.set(child, "");
+    child.stdin?.on("error", () => undefined);
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      const previous = this.stderr.get(child) ?? "";
+      this.stderr.set(child, `${previous}${chunk.toString()}`.slice(-MAX_RPC_STDERR_BYTES));
     });
+    if (child.stdout) {
+      createInterface({ input: child.stdout }).on("line", (line) => this.receive(line));
+    }
+    child.on("error", (error) => this.failAll(error));
+    child.on("close", (code) => this.onClose(child, code));
+    return child;
+  }
+  private onClose(child: ChildProcess, code: number | null): void {
+    if (child !== this.child) return;
+    clearTimeout(this.killer);
+    const text = this.stderr.get(child) ?? "";
+    this.stderr.delete(child);
+    if (this.closed) return;
+    const startupModelError =
+      this.starting && code === 1 && text.trimStart().startsWith("No default model selected.");
+    const retry = startupModelError && this.attempt < this.models.length;
+    if (retry) {
+      this.attempt += 1;
+      this.child = this.start();
+      return;
+    }
+    this.closed = true;
+    const status = code === null ? "" : ` with code ${code}`;
+    const detail = startupModelError ? `: ${MODEL_STARTUP_ERROR}` : "";
+    this.failAll(new OmpAccountsError(`omp exited${status}${detail}`));
+    this.handlers.onExit?.();
   }
 
   /** OMP's answer, still unchecked: callers read it through a schema. */
   request(command: Record<string, unknown>, timeoutMs = RPC_REQUEST_TIMEOUT_MS): Promise<unknown> {
-    if (this.closed) {
-      return Promise.reject(new OmpAccountsError("omp is no longer running"));
-    }
+    if (this.closed) return Promise.reject(new OmpAccountsError("omp is no longer running"));
     const id = `paseo-omp-${++this.nextId}`;
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+    const frame = { ...command, id };
     const timer = setTimeout(() => {
       this.pending.delete(id);
       reject(new OmpAccountsError(`omp did not answer ${String(command.type)} in time`));
     }, timeoutMs);
     this.pending.set(id, {
+      timer,
+      frame,
       resolve: (data) => {
         clearTimeout(timer);
         resolve(data);
@@ -317,16 +374,18 @@ export class OmpRpcProcess {
         reject(error);
       },
     });
-    this.send({ ...command, id });
+    this.send(frame);
     return promise;
   }
 
   send(frame: Record<string, unknown>): void {
+    if (this.closed || this.starting) return;
     this.child.stdin?.write(`${JSON.stringify(frame)}\n`);
   }
 
   close(): void {
     if (this.closed) return;
+    this.failAll(new OmpAccountsError("omp is closing"));
     this.closed = true;
     this.child.kill();
     // A login process that ignores TERM keeps OMP's fixed OAuth callback port.
@@ -343,9 +402,14 @@ export class OmpRpcProcess {
     const parsed = FrameSchema.safeParse(raw);
     if (!parsed.success) return;
     const frame = parsed.data;
+    if (frame.type === "ready") {
+      this.starting = false;
+      for (const waiter of this.pending.values()) this.send(waiter.frame);
+    }
     const waiter = frame.id ? this.pending.get(frame.id) : undefined;
     if (frame.type === "response" && frame.id && waiter) {
       this.pending.delete(frame.id);
+      clearTimeout(waiter.timer);
       if (frame.success) waiter.resolve(frame.data);
       else waiter.reject(new OmpAccountsError(frame.error ?? "omp refused the request"));
     } else if (frame.type === "extension_ui_request") {
@@ -356,7 +420,10 @@ export class OmpRpcProcess {
   }
 
   private failAll(error: Error): void {
-    for (const waiter of this.pending.values()) waiter.reject(error);
+    for (const waiter of this.pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
     this.pending.clear();
   }
 }

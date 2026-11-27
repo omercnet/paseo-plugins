@@ -184,6 +184,10 @@ describe("a server to add", () => {
 interface Scenario {
   servers: { name: string; transport: string; enabled: boolean; target: string }[];
   /** `/mcp list` prints this instead of the servers. */
+  /** OMP rejects the helper at startup when no explicit built-in model is supplied. */
+  requireModel?: boolean;
+  /** OMP exits before the command with this diagnostic. */
+  startupError?: string;
   listRaw?: string;
   /** omp exits right after printing the sign-in page. */
   crashAfterUrl?: boolean;
@@ -212,8 +216,14 @@ const fs = require("node:fs");
 const http = require("node:http");
 const S = ${JSON.stringify(scenario)};
 const args = process.argv.slice(2);
+if (S.requireModel && process.env.OPENAI_API_KEY === undefined && args[args.indexOf("--model") + 1] !== "anthropic/claude-haiku-4-5") {
+  process.stderr.write("No default model selected. Use /login, set an API key environment variable, or select a local model with /model or --model.");
+  process.exit(1);
+}
+if (S.startupError) { process.stderr.write(S.startupError + "\\n"); process.exit(1); }
 if (args[0] === "--version") { console.log("omp/fake"); process.exit(0); }
 const print = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+print({ type: "ready", protocolVersion: 1 });
 const out = (text) => print({ type: "command_output", text });
 const state = () => JSON.parse(fs.readFileSync(S.stateFile, "utf8"));
 createInterface({ input: process.stdin }).on("line", (line) => {
@@ -360,6 +370,34 @@ afterEach(async () => {
 describe.skipIf(ON_WINDOWS)("servers", () => {
   const docs = { name: "docs", transport: "http", enabled: true, target: "https://docs.test" };
 
+  test("starts without a default model or exposing provider credentials to the helper", async () => {
+    vi.stubEnv("OPENAI_API_KEY", undefined);
+    const mcps = await install({ servers: [docs], requireModel: true });
+
+    expect(await mcps.list(undefined, false)).toMatchObject({
+      installed: true,
+      servers: [{ name: "docs", state: "enabled" }],
+      error: null,
+    });
+  });
+
+  test("shows OMP's bounded, sanitized startup error", async () => {
+    const longSecret = "s".repeat(9000);
+    vi.stubEnv("HOME", directory);
+    vi.stubEnv("OPENAI_API_KEY", longSecret);
+    const prefix = "x".repeat(9000);
+    const mcps = await install({
+      startupError: `No default model selected.\n${prefix}\nOPENAI_API_KEY=${longSecret}\nHOME=${directory}`,
+    });
+
+    const view = await mcps.list(undefined, false);
+    expect(view.error).toContain("omp exited with code 1");
+    expect(view.error).toContain("OMP needs a default model");
+    expect(view.error).not.toContain(longSecret);
+    expect(view.error).not.toContain(directory);
+    expect(view.error).not.toContain(prefix);
+    expect(Buffer.byteLength(view.error ?? "")).toBeLessThan(4096);
+  });
   test("lists what omp prints, and says so when omp is missing or unreadable", async () => {
     const mcps = await install({ servers: [docs] });
     expect(await mcps.list(undefined, false)).toMatchObject({
