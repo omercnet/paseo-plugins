@@ -60,7 +60,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install workflow dependencies
         run: bun install --frozen-lockfile --ignore-scripts
       - name: Test workflow scripts
@@ -96,7 +96,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
@@ -149,7 +149,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
@@ -181,7 +181,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
@@ -233,7 +233,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
@@ -283,7 +283,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
@@ -342,7 +342,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install dependencies
         working-directory: .
         run: bun install --frozen-lockfile
@@ -394,7 +394,7 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: 1.4.4
+          bun-version: 1.4.5
       - name: Install Windows dependencies
         working-directory: .
         run: bun install --frozen-lockfile
