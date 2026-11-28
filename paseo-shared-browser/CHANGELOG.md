@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.3.0](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.2.1...shared-browser-v4.3.0) (2026-11-28)
+
+
+### Features
+
+* **shared-browser:** expose native compose text action ([#695](https://github.com/omercnet/paseo-plugins/issues/695)) ([9e15488](https://github.com/omercnet/paseo-plugins/commit/9e15488c28b4ceb3bc1e7d7cb0d6d0da71bd01b5))
+
+
+### Bug Fixes
+
+* **deps:** update dependency agent-browser to v0.44.0 ([#698](https://github.com/omercnet/paseo-plugins/issues/698)) ([ab4f343](https://github.com/omercnet/paseo-plugins/commit/ab4f343a33669b068154456162bec490829851ef))
+
 ## [4.2.1](https://github.com/omercnet/paseo-plugins/compare/shared-browser-v4.2.0...shared-browser-v4.2.1) (2026-11-22)
 
 
