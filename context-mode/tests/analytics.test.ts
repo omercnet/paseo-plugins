@@ -15,7 +15,7 @@ import {
 
 const temporaryDirectories: string[] = [];
 
-/** Context Mode 2.1.4 `context.db` layout (PRAGMA user_version = 6). */
+/** Context Mode 2.2.3 `context.db` layout, with schema 6 or 7 selected by the fixture. */
 const SCHEMA = `
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE events (
@@ -48,7 +48,9 @@ const SCHEMA = `
     chunk_count INTEGER NOT NULL,
     created_ts INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    accessed_ts INTEGER NOT NULL
+    accessed_ts INTEGER NOT NULL,
+    unit_lo INTEGER,
+    unit_hi INTEGER
   );
   CREATE VIRTUAL TABLE chunks USING fts5(
     source_id UNINDEXED, session_id UNINDEXED, worktree UNINDEXED, agent UNINDEXED, ord UNINDEXED,
@@ -81,6 +83,7 @@ interface DatabaseFixture {
   events: EventFixture[];
   sources?: SourceFixture[];
   wal?: boolean;
+  userVersion?: 5 | 6 | 7 | 8;
 }
 
 async function temporaryDataDir(): Promise<string> {
@@ -103,7 +106,7 @@ async function openDatabase(
       : "PRAGMA journal_mode = DELETE;",
   );
   database.exec(SCHEMA);
-  database.exec("PRAGMA user_version = 6");
+  database.exec(`PRAGMA user_version = ${fixture.userVersion ?? 6}`);
   const insertEvent = database.prepare(`INSERT INTO events (
     session_id, worktree, agent, kind, tool, ok, bytes, body, turn,
     sandbox_bytes, returned_bytes, created_at, accessed_at
@@ -582,26 +585,76 @@ describe("structured Context Mode analytics", () => {
     );
   });
 
-  test("rejects an unsupported user_version without reading it", async () => {
+  test("reads populated schema 7 databases with nullable unit bounds", async () => {
     const dataDir = await temporaryDataDir();
     const database = await openDatabase(dataDir, "1111111111111111", {
-      worktree: "/work/old",
-      events: [singleCall("mcp:old", "codex", 100, 10)],
+      worktree: "/work/current",
+      userVersion: 7,
+      events: [singleCall("mcp:current", "codex", 100, 10)],
+      sources: [
+        {
+          session: "mcp:current",
+          agent: "codex",
+          kind: "path",
+          label: "docs/guide.md",
+          bytes: 2_048,
+          chunks: 4,
+          at: "2026-09-20T10:00:00.000Z",
+        },
+      ],
     });
-    database.exec("PRAGMA user_version = 5");
+    expect(database.prepare("SELECT unit_lo, unit_hi FROM sources").get()).toEqual({
+      unit_lo: null,
+      unit_hi: null,
+    });
     database.close();
+
+    const result = await collect(dataDir);
+
+    expect(result.schemaVersion).toBe(2);
+    expect(result.completeness).toBe("complete");
+    expect(result.warnings).toEqual([]);
+    expect(result.totals).toMatchObject({
+      projects: 1,
+      sessions: 1,
+      events: 1,
+      toolCalls: 1,
+      indexedSources: 1,
+      indexedChunks: 4,
+    });
+    expect(result.sources).toHaveLength(1);
+  });
+
+  test("rejects unsupported user_versions without reading them", async () => {
+    const dataDir = await temporaryDataDir();
+    for (const [project, userVersion] of [
+      ["1111111111111111", 5],
+      ["2222222222222222", 8],
+    ] as const) {
+      const database = await openDatabase(dataDir, project, {
+        worktree: "/work/unsupported",
+        userVersion,
+        events: [singleCall("mcp:old", "codex", 100, 10)],
+      });
+      database.close();
+    }
 
     const result = await collect(dataDir);
 
     expect(result.completeness).toBe("unsupported");
     expect(result.totals.events).toBe(0);
-    expect(result.warnings).toContainEqual(
+    expect(result.warnings).toEqual([
       expect.objectContaining({
         code: "unsupported-schema",
         project: "1111111111111111",
-        message: expect.stringContaining("version 5"),
+        message: expect.stringContaining("version 5; expected 6 or 7."),
       }),
-    );
+      expect.objectContaining({
+        code: "unsupported-schema",
+        project: "2222222222222222",
+        message: expect.stringContaining("version 8; expected 6 or 7."),
+      }),
+    ]);
   });
 
   test("reports a missing required column", async () => {

@@ -2,7 +2,7 @@ import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 
 export const CONTEXT_MODE_ANALYTICS_SCHEMA_VERSION = 2 as const;
-export const SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSION = 6 as const;
+export const SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSIONS = [6, 7] as const;
 
 const nonNegativeInteger = z.number().int().nonnegative();
 const nonNegativeNumber = z.number().finite().nonnegative();
