@@ -8,15 +8,15 @@
       "name": "@omercnet/paseo-omp",
       "version": "5.8.2",
       "dependencies": {
-        "@getpaseo/protocol": "0.17.3",
+        "@getpaseo/protocol": "0.17.4",
         "@modelcontextprotocol/sdk": "1.32.2",
         "yaml": "^2.9.0"
       }
     },
     "node_modules/@getpaseo/protocol": {
-      "version": "0.17.3",
-      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.17.3.tgz",
-      "integrity": "sha512-x4vECBDnlrSDlaq0/zadkP5AZ77zugW/78WLWI1oxLKye6jktTGGiSron3e2hxNuMBQb7twFHgzg9oUOs/lXTg==",
+      "version": "0.17.4",
+      "resolved": "https://registry.npmjs.org/@getpaseo/protocol/-/protocol-0.17.4.tgz",
+      "integrity": "sha512-p9Ay0wJb/WSL2bfN97gTkvhlElLk9exhH9mCJCGT6LUd9l2MN81TNsr5RgvbvFA0tCZnIcPMNURABOuKEJEy0A==",
       "license": "Apache-2.0",
       "dependencies": {
         "semver": "^7.8.5",
@@ -611,9 +611,9 @@
       }
     },
     "node_modules/hono": {
-      "version": "4.13.22",
-      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.22.tgz",
-      "integrity": "sha512-wncKd5/40Pj8grx0RZ2fgNIicFEmVFwIHT5UFLTnphR8I6AQWFf9c2JoM6ZJ9g8y4pMzg3sNlCVNe0m2Yclg0Q==",
+      "version": "4.13.23",
+      "resolved": "https://registry.npmjs.org/hono/-/hono-4.13.23.tgz",
+      "integrity": "sha512-OS90dj7dcsftEEWCOef8jRbnHE5lbrOq0hNRqjSyPsOnaGZvvfof1KS05hQNb4kUOCfDq1mG3PmHoX37DMnHQg==",
       "license": "MIT",
       "engines": {
         "node": ">=16.9.0"
@@ -662,9 +662,9 @@
       "license": "ISC"
     },
     "node_modules/ip-address": {
-      "version": "10.7.6",
-      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.6.tgz",
-      "integrity": "sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==",
+      "version": "10.7.7",
+      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.7.tgz",
+      "integrity": "sha512-He15rAs4jip5AEAz7XM9L+S6Y8LBMIDj6YewbYuJfmDnOCKWb+3TLOGnHFBTAIW7wpm5ohtZ+Xyo5PEaG+O2vQ==",
       "license": "MIT",
       "engines": {
         "node": ">= 12"
