@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.8.3](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.8.2...paseo-omp-v5.8.3) (2026-11-28)
+
+
+### Bug Fixes
+
+* **paseo-omp:** start slash-command helpers without a configured model ([#701](https://github.com/omercnet/paseo-plugins/issues/701)) ([fdb5cde](https://github.com/omercnet/paseo-plugins/commit/fdb5cdeba81bdac58277c9925ea394b8fa1a087f))
+
 ## [5.8.2](https://github.com/omercnet/paseo-plugins/compare/paseo-omp-v5.8.1...paseo-omp-v5.8.2) (2026-11-23)
 
 
