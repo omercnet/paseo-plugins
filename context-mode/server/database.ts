@@ -1,7 +1,7 @@
 import { lstatSync, type Stats } from "node:fs";
 import { basename, dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSION } from "../shared/analytics";
+import { SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSIONS } from "../shared/analytics";
 import { PLUGIN_SESSION_ID } from "./mcp-process";
 
 const BUSY_TIMEOUT_MS = 150;
@@ -441,11 +441,11 @@ export function readContextModeDatabase(path: string): ContextModeDatabaseSnapsh
     database.exec("PRAGMA query_only = ON");
     const versionRow = database.prepare("PRAGMA user_version").get() as DatabaseRow | undefined;
     const userVersion = nonNegativeInteger(versionRow?.user_version);
-    if (userVersion !== SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSION) {
+    if (!SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSIONS.some((version) => version === userVersion)) {
       throw new ContextModeDatabaseError(
         "unsupported-schema",
         path,
-        `Unsupported Context Mode schema version ${userVersion}; expected ${SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSION}.`,
+        `Unsupported Context Mode schema version ${userVersion}; expected ${SUPPORTED_CONTEXT_MODE_DATABASE_USER_VERSIONS.join(" or ")}.`,
       );
     }
     assertRequiredSchema(database, path);
